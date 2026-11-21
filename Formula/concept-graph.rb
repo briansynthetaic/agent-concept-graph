@@ -2,7 +2,7 @@ class ConceptGraph < Formula
   desc "Explore agent-generated concept maps in a native macOS window"
   homepage "https://github.com/briansynthetaic/agent-concept-graph"
   url "https://github.com/briansynthetaic/agent-concept-graph.git",
-      tag: "v0.1.0", revision: "08f01c9e9383ed17799618c4e36d9503bc744a80"
+      tag: "v0.2.0"
 
   depends_on macos: :sonoma
 

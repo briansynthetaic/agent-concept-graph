@@ -34,6 +34,7 @@ final class ForceLayout {
         var bias: Double
     }
 
+    var shape = NodeShape.circle
     var nodes: [Node] = []
     private var springs: [Spring] = []
     private var groupCount = 0
@@ -67,7 +68,7 @@ final class ForceLayout {
         springs = links.map { link in
             let a = nodes[link.source], b = nodes[link.target]
             let sameGroup = a.group == b.group
-            let distance = a.radius + b.radius + baseGap + link.gap + (sameGroup ? 0 : crossGroupGap)
+            let distance = shape.geometry(a.radius + b.radius).enclosingRadius + baseGap + link.gap + (sameGroup ? 0 : crossGroupGap)
             let ds = Double(degree[link.source]), dt = Double(degree[link.target])
             let strength = (sameGroup ? 1.0 : 0.4) / min(ds, dt)
             return Spring(source: link.source, target: link.target, distance: distance,
@@ -81,13 +82,20 @@ final class ForceLayout {
         alpha = max(alpha, value)
     }
 
-    /// Runs to rest. Used before the window first appears so the user never sees the tangle.
-    func settle(maxTicks: Int = 450) {
+    /// A complete restored arrangement stays exactly where the user left it.
+    func stop() {
+        alpha = 0
+        alphaTarget = 0
+    }
+
+    func settle(maxTicks: Int = 450, timeBudget: TimeInterval = .infinity) {
         alpha = 1
+        let start = ProcessInfo.processInfo.systemUptime
         var ticks = 0
         while alpha >= alphaMin && ticks < maxTicks {
             tick()
             ticks += 1
+            if ProcessInfo.processInfo.systemUptime - start >= timeBudget { break }
         }
     }
 
@@ -96,6 +104,8 @@ final class ForceLayout {
         let count = nodes.count
         guard count > 0 else { return }
 
+        let enclosingFactor = shape.geometry(1).enclosingRadius
+        let arrowClearance = nodes.reduce(0) { max($0, $1.radius) } * enclosingFactor + 16
         nodes.withUnsafeMutableBufferPointer { n in
             // Springs along relationships.
             for spring in springs {
@@ -166,10 +176,12 @@ final class ForceLayout {
                         n[i].vy += (centreY[g] - n[i].y) * cohesion * alpha
                     }
                     let dx = n[i].x - centreX[g], dy = n[i].y - centreY[g]
-                    reach[g] = max(reach[g], (dx * dx + dy * dy).squareRoot() + n[i].radius)
+                    reach[g] = max(reach[g], (dx * dx + dy * dy).squareRoot() + n[i].radius * enclosingFactor)
                 }
 
-                // Group against group.
+                // Accumulate each territory's translation once, then apply it to its members.
+                var groupDX = [Double](repeating: 0, count: groupCount)
+                var groupDY = [Double](repeating: 0, count: groupCount)
                 for g in 0..<groupCount where size[g] > 0 {
                     for h in (g + 1)..<groupCount where size[h] > 0 {
                         var dx = centreX[h] - centreX[g], dy = centreY[h] - centreY[g]
@@ -179,16 +191,16 @@ final class ForceLayout {
                         guard overlap > 0 else { continue }
                         let push = overlap / distance * 0.12
                         let shareG = size[h] / (size[g] + size[h])
-                        for i in 0..<count {
-                            if n[i].group == g {
-                                n[i].vx -= dx * push * shareG
-                                n[i].vy -= dy * push * shareG
-                            } else if n[i].group == h {
-                                n[i].vx += dx * push * (1 - shareG)
-                                n[i].vy += dy * push * (1 - shareG)
-                            }
-                        }
+                        groupDX[g] -= dx * push * shareG
+                        groupDY[g] -= dy * push * shareG
+                        groupDX[h] += dx * push * (1 - shareG)
+                        groupDY[h] += dy * push * (1 - shareG)
                     }
+                }
+                for i in 0..<count where n[i].group >= 0 {
+                    let group = n[i].group
+                    n[i].vx += groupDX[group]
+                    n[i].vy += groupDY[group]
                 }
                 // Ungrouped bubbles against groups.
                 for i in 0..<count where n[i].group < 0 {
@@ -196,7 +208,7 @@ final class ForceLayout {
                         var dx = n[i].x - centreX[g], dy = n[i].y - centreY[g]
                         if dx == 0 && dy == 0 { dx = 1; dy = 1 }
                         let distance = (dx * dx + dy * dy).squareRoot()
-                        let overlap = reach[g] + n[i].radius + territoryPadding - distance
+                        let overlap = reach[g] + n[i].radius * enclosingFactor + territoryPadding - distance
                         guard overlap > 0 else { continue }
                         n[i].vx += dx / distance * overlap * 0.12
                         n[i].vy += dy / distance * overlap * 0.12
@@ -212,13 +224,18 @@ final class ForceLayout {
                 let ex = n[t].x - ax, ey = n[t].y - ay
                 let length2 = ex * ex + ey * ey
                 guard length2 > 1 else { continue }
+                let minX = min(ax, n[t].x) - arrowClearance, maxX = max(ax, n[t].x) + arrowClearance
+                let minY = min(ay, n[t].y) - arrowClearance, maxY = max(ay, n[t].y) + arrowClearance
                 for k in 0..<count where k != s && k != t {
+                    guard n[k].x >= minX, n[k].x <= maxX, n[k].y >= minY, n[k].y <= maxY else { continue }
                     // Only the stretch between the two bubbles counts; their own rims are the collision force's job.
                     let along = min(0.9, max(0.1, ((n[k].x - ax) * ex + (n[k].y - ay) * ey) / length2))
                     var dx = n[k].x - (ax + ex * along)
                     var dy = n[k].y - (ay + ey * along)
-                    let reach = n[k].radius + 16
                     var d2 = dx * dx + dy * dy
+                    let outer = n[k].radius * enclosingFactor + 16
+                    guard d2 < outer * outer else { continue }
+                    let reach = shape.geometry(n[k].radius).reach(dx: dx, dy: dy) + 16
                     guard d2 < reach * reach else { continue }
                     if d2 < 0.01 {
                         // Dead centre on the line: step off sideways.
@@ -246,7 +263,12 @@ final class ForceLayout {
                         var dy = n[i].y + n[i].vy - n[j].y - n[j].vy
                         if dx == 0 && dy == 0 { dx = 0.5; dy = 0.5 }
                         let d2 = dx * dx + dy * dy
-                        let reach = n[i].radius + n[j].radius + collisionPadding
+                        let radii = n[i].radius + n[j].radius
+                        let outer = radii * enclosingFactor + collisionPadding
+                        guard d2 < outer * outer else { continue }
+                        // Both outlines have the same proportions. Their summed outline gives
+                        // the contact distance in the direction joining the two centers.
+                        let reach = shape.geometry(radii).reach(dx: dx, dy: dy) + collisionPadding
                         guard d2 < reach * reach else { continue }
                         let distance = d2.squareRoot()
                         let push = (reach - distance) / distance * 0.7

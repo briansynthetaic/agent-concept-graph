@@ -85,6 +85,13 @@ precondition(ask.hasPrefix(question) && !ask.contains("Schedule API"))
 let build = PromptTask.build.compose(graph: graph, path: path, focus: worker, question: "")
 precondition(graph.nodes.allSatisfy { build.contains($0.detail) })
 precondition(graph.edges.allSatisfy { build.contains($0.label) })
+let pair = PromptTask.explain.compose(graph: graph, path: path, selection: ["schedule", "worker"],
+                                     neighbors: false, question: question)
+precondition(pair.contains(worker.detail) && pair.contains("Schedule API"))
+precondition(!pair.contains("Run ledger") && !pair.contains("Relationships\n"))
+let connected = PromptTask.explain.compose(graph: graph, path: path, selection: ["worker", "runs"],
+                                          neighbors: false, question: question)
+precondition(connected.contains("claims and records outcomes") && !connected.contains("Run planner"))
 let expand = PromptTask.expand.compose(graph: graph, path: path, focus: nil, question: "")
 precondition(expand.contains(path) && expand.contains("Preserve existing IDs"))
 SWIFT
@@ -93,12 +100,28 @@ if swiftc "$ROOT/Sources/ConceptGraph/GraphModel.swift" "$ROOT/Sources/ConceptGr
 else fail "compile prompt checks"; fi
 
 echo "rendering"
-expect "render writes an image" 0 "Rendered" "$CG" render "$ROOT/skill/examples/git-internals.json" --out "$WORK/out.png" --size 1200x800
+expect "save a graph document" 0 "Saved" "$CG" save "$WORK/git.conceptgraph" < "$ROOT/skill/examples/git-internals.json"
+expect "render the saved document" 0 "Rendered" "$CG" render "$WORK/git.conceptgraph" --out "$WORK/out.png" --size 1200x800
 if [ "$(sips -g pixelWidth "$WORK/out.png" 2>/dev/null | awk '/pixelWidth/ {print $2}')" = "2400" ]; then pass "the image is 1200 points wide at 2x"
 else fail "the image is 1200 points wide at 2x"; fi
 
+cp "$ROOT/skill/examples/git-internals.json" "$WORK/source.json"
+cp "$WORK/source.json" "$WORK/original"
+ln -s "$WORK/source.json" "$WORK/symlink"
+ln "$WORK/source.json" "$WORK/hardlink"
+mkdir "$WORK/sub"
+for alias in "$WORK/source.json" "$WORK/sub/../source.json" "$WORK/symlink" "$WORK/hardlink"; do
+  expect "export refuses ${alias#"$WORK"/}" 1 "different from the source" "$CG" render "$WORK/source.json" --out "$alias" --size 400x300
+  cmp -s "$WORK/source.json" "$WORK/original" || fail "source bytes changed"
+done
+expect "replace an ordinary existing PNG" 0 "Rendered" "$CG" render "$WORK/source.json" --out "$WORK/out.png" --size 400x300
+for size in 400xjunkx300 400xx300 x400x300 400x300x 400xnan infx300; do
+  expect "reject size $size" 64 "size must look like" "$CG" render "$WORK/source.json" --out "$WORK/out.png" --size "$size"
+done
+expect "reject conflicting appearances" 64 "either --light or --dark" "$CG" render "$WORK/source.json" --out "$WORK/out.png" --light --dark
+
 echo "windows"
-expect "close with nothing open says so" 0 "No window is open" "$CG" close "$ROOT/skill/examples/git-internals.json"
+expect "close with nothing open says so" 0 "No window is open" "$CG" close "$WORK/never-opened.json"
 
 echo
 if [ "$failures" -eq 0 ]; then echo "all checks passed"; else echo "$failures check(s) failed"; exit 1; fi

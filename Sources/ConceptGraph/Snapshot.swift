@@ -15,7 +15,7 @@ enum Snapshot {
         }
     }
 
-    static func render(graph: ConceptGraph, to path: String, size: CGSize, dark: Bool?) throws {
+    static func render(graph: ConceptGraph, source: String, to path: String, size: CGSize, dark: Bool?) throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let appearance = dark.flatMap { NSAppearance(named: $0 ? .darkAqua : .aqua) }
@@ -36,20 +36,26 @@ enum Snapshot {
         window.appearance = appearance
         window.contentView = backdrop
 
-        canvas.setGraph(graph)
+        canvas.setGraph(graph, fullySettle: true)
         inspector.show(graph: graph, selected: canvas.selectedID, style: canvas.style)
         backdrop.layoutSubtreeIfNeeded()
 
+        try write(view: backdrop, source: source, to: URL(fileURLWithPath: path))
+    }
+
+    static func write(view: NSView, source: String, to url: URL) throws {
+        try GraphFile.requireDistinct(source: source, destination: url)
+        let size = view.bounds.size
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
             throw Launcher.LaunchError(description: "could not allocate a \(Int(size.width))×\(Int(size.height)) image")
         }
         bitmap.size = size
-        backdrop.cacheDisplay(in: backdrop.bounds, to: bitmap)
+        view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let png = bitmap.representation(using: .png, properties: [:]) else {
             throw Launcher.LaunchError(description: "could not encode the image as PNG")
         }
-        try png.write(to: URL(fileURLWithPath: path))
+        try png.write(to: url, options: .atomic)
     }
 }

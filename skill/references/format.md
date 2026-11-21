@@ -1,5 +1,10 @@
 ## The graph file
 
+A `.conceptgraph` document and a `.json` graph have the same JSON contents.
+A graph needs a nonempty title and at least one node with a unique id and a
+label. Each edge names two existing node ids. Copying this one file carries
+the graph to another machine. The viewer computes the layout locally.
+
 ```json
 {
   "title": "Why the build is slow",

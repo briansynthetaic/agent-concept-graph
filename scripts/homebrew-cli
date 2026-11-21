@@ -33,3 +33,13 @@ elif [[ "$action" == link ]]; then
 else
   echo "No skill link at $link"
 fi
+
+# Linking runs in the agent owner's login session. Tell Finder about the bundle
+# inside the keg before the first graph is opened from the command line.
+if [[ "$action" == link ]]; then
+  app="$skill/bin/ConceptGraph.app"
+  register="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  if [[ -d "$app" && -x "$register" ]]; then
+    "$register" -f "$app" || echo "Open $app once to register it with Finder." >&2
+  fi
+fi

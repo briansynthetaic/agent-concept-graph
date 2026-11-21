@@ -7,13 +7,19 @@ enum PromptTask: Int, CaseIterable {
         switch self {
         case .explain: return "Ask a question"
         case .expand: return "Expand the graph"
-        case .build: return "Build this system"
+        case .build: return "Build this system (whole graph)"
         }
     }
 
     func compose(graph: ConceptGraph, path: String, focus: ConceptNode?, question: String) -> String {
-        let subject = self == .build ? nil : focus
-        let scope = subject.map { "\($0.label) [\($0.id)]" } ?? graph.title
+        compose(graph: graph, path: path, selection: focus.map { [$0.id] } ?? [], neighbors: true, question: question)
+    }
+
+    func compose(graph: ConceptGraph, path: String, selection: [String], neighbors: Bool, question: String) -> String {
+        let selected = Set(selection)
+        let subjects = graph.nodes.filter { selected.contains($0.id) }
+        let wholeGraph = self == .build || subjects.isEmpty
+        let scope = wholeGraph ? graph.title : subjects.map { "\($0.label) [\($0.id)]" }.joined(separator: ", ")
         let note = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let instruction: String
         switch self {
@@ -28,12 +34,13 @@ enum PromptTask: Int, CaseIterable {
         parts += ["Graph file\n" + path, "Design\n" + graph.title]
         if !graph.summary.isEmpty { parts.append(graph.summary) }
         let edges = graph.edges.filter { edge in
-            guard let subject else { return true }
-            return edge.from == subject.id || edge.to == subject.id
+            if wholeGraph { return true }
+            let from = selected.contains(edge.from), to = selected.contains(edge.to)
+            return neighbors ? from || to : from && to
         }
         let ids = Set(edges.flatMap { [$0.from, $0.to] })
         let groups = Dictionary(uniqueKeysWithValues: graph.groups.map { ($0.id, $0.label) })
-        for node in graph.nodes where subject == nil || node.id == subject?.id || ids.contains(node.id) {
+        for node in graph.nodes where wholeGraph || selected.contains(node.id) || ids.contains(node.id) {
             var lines = ["\(node.label) [\(node.id)]"]
             if let group = node.group { lines.append("Group: " + (groups[group] ?? group)) }
             lines += [node.summary, node.detail].filter { !$0.isEmpty }

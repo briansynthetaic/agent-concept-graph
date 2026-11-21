@@ -8,6 +8,19 @@ import QuartzCore
 /// points with `view = graph * scale + offset`. The view is flipped (y grows down).
 final class CanvasView: NSView {
 
+    var shape = NodeShape(rawValue: ViewerPreferences.defaults.integer(forKey: "nodeShape")) ?? .circle
+    var reduceMotion: Bool {
+        ViewerPreferences.defaults.bool(forKey: "reduceMotion") || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+    enum LabelMode: Int { case automatic, neighborhood, always }
+    var labels = LabelMode.automatic { didSet { needsDisplay = true } }
+    var showsGroups = true { didSet { needsDisplay = true } }
+    var onStateChanged: (() -> Void)?
+    private var additionalSelection: Set<String> = []
+    var selectionIDs: [String] {
+        (selectedID.map { [$0] } ?? []) + additionalSelection.sorted()
+    }
+
     // MARK: Scene
 
     private struct Node {
@@ -73,7 +86,7 @@ final class CanvasView: NSView {
     // MARK: State
 
     private var scale: CGFloat = 1
-    private var offset = CGPoint.zero
+    private var offset = CGPoint.zero { didSet { onStateChanged?() } }
     /// Until the user moves the camera themselves, it keeps the whole graph in view.
     private var userMovedCamera = false
     private var hasInteracted = false
@@ -120,6 +133,10 @@ final class CanvasView: NSView {
         // Views no longer clip their drawing by default; without this, bubbles near the
         // edge of the canvas would be painted over the inspector.
         clipsToBounds = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Concept graph")
+        setAccessibilityHelp("Press Return to explore a neighborhood, use the arrow keys to select a concept, and press Escape to return.")
     }
 
     @available(*, unavailable)
@@ -136,7 +153,7 @@ final class CanvasView: NSView {
     /// Shows `newGraph`. The first call lays everything out from scratch; later
     /// calls (live updates) keep every surviving bubble where it was and let the
     /// new ones settle in around them.
-    func setGraph(_ newGraph: ConceptGraph) {
+    func setGraph(_ newGraph: ConceptGraph, fullySettle: Bool = false) {
         let previous = graph
         var oldPlaces: [String: ForceLayout.Node] = [:]
         for (i, node) in nodes.enumerated() { oldPlaces[node.model.id] = layout.nodes[i] }
@@ -156,23 +173,30 @@ final class CanvasView: NSView {
         indexByID = [:]
         nodes = newGraph.nodes.enumerated().map { i, model in
             indexByID[model.id] = i
-            let fitted = Self.fitLabel(model.label, importance: model.importance)
+            let fitted = Self.fitLabel(model.label, importance: model.importance, shape: shape)
             let group = model.group.flatMap { groupIndex[$0] } ?? -1
             if group >= 0 { groups[group].members.append(i) }
             let summarySize = max(4.4, fitted.radius * 0.105)
             return Node(model: model, radius: fitted.radius, hue: style.color(for: model), group: group,
                         label: fitted.block, labelSize: fitted.size,
-                        summary: Self.summaryBlock(model.summary, radius: fitted.radius, size: summarySize, label: fitted.block),
+                        summary: summaryBlock(model.summary, radius: fitted.radius, size: summarySize, label: fitted.block),
                         summarySize: summarySize)
         }
 
         let edgeFont = NSFont.systemFont(ofSize: Metrics.edgeLabelSize, weight: .medium)
+        var edgeLabels: [String: TextBlock] = [:]
+        func edgeLabel(_ text: String) -> TextBlock? {
+            guard !text.isEmpty else { return nil }
+            if let block = edgeLabels[text] { return block }
+            let block = TextBlock.make(text, font: edgeFont, maxWidth: 170, maxLines: 1)
+            edgeLabels[text] = block
+            return block
+        }
         edges = newGraph.edges.compactMap { model in
             guard let s = indexByID[model.from], let t = indexByID[model.to] else { return nil }
             nodes[s].neighbors.insert(t)
             nodes[t].neighbors.insert(s)
-            let label = model.label.isEmpty ? nil : TextBlock.make(model.label, font: edgeFont, maxWidth: 170, maxLines: 1)
-            return Edge(model: model, source: s, target: t, label: label)
+            return Edge(model: model, source: s, target: t, label: edgeLabel(model.label))
         }
 
         // Anything that changes the forces means the layout has to move.
@@ -186,7 +210,7 @@ final class CanvasView: NSView {
         let now = CACurrentMediaTime()
         var placed: [ForceLayout.Node?] = nodes.map { node in
             guard var old = oldPlaces[node.model.id] else { return nil }
-            old.radius = Double(node.radius)
+            old.radius = node.radius
             old.group = node.group
             return old
         }
@@ -206,9 +230,10 @@ final class CanvasView: NSView {
                 x = anchors.map(\.x).reduce(0, +) / Double(anchors.count) + reach * cos(angle)
                 y = anchors.map(\.y).reduce(0, +) / Double(anchors.count) + reach * sin(angle)
             }
-            placed[i] = ForceLayout.Node(x: x, y: y, radius: Double(nodes[i].radius), group: nodes[i].group)
-            if !isFirst { nodes[i].born = now }
+            placed[i] = ForceLayout.Node(x: x, y: y, radius: nodes[i].radius, group: nodes[i].group)
+            if !isFirst && !reduceMotion { nodes[i].born = now }
         }
+        layout.shape = shape
         layout.nodes = placed.compactMap { $0 }
         layout.setLinks(edges.map {
             ForceLayout.Link(source: $0.source, target: $0.target, gap: Double(min($0.label?.width ?? 0, 110)) * 0.55)
@@ -221,6 +246,11 @@ final class CanvasView: NSView {
             selected = i
             focusChanged = true
         }
+        additionalSelection.formIntersection(indexByID.keys)
+        if selected == nil, let next = additionalSelection.sorted().first { selected = indexByID[next] }
+        if let selectedID { additionalSelection.remove(selectedID) }
+        if let anchor = focusAnchor, indexByID[anchor] == nil { leaveNeighborhood() }
+        updateAccessibleSelection()
         hovered = nil
         // An update can arrive mid-drag; node indices may no longer mean what they did.
         drag = .none
@@ -228,7 +258,8 @@ final class CanvasView: NSView {
         recomputeMatches()
 
         if isFirst {
-            layout.settle()
+            layout.settle(timeBudget: fullySettle ? .infinity : 0.025)
+            if layout.isActive { startAnimating() }
             userMovedCamera = false
             if let target = fitTarget() { setCamera(center: target.center, scale: target.scale) }
         } else {
@@ -239,36 +270,39 @@ final class CanvasView: NSView {
         needsDisplay = true
     }
 
+    private static let fittingAttempts: [(grow: Int, shrink: Int)] = {
+        var attempts: [(grow: Int, shrink: Int)] = []
+        for grow in 0...6 { for shrink in 0...3 { attempts.append((grow, shrink)) } }
+        return attempts.sorted { ($0.grow + $0.shrink, $0.shrink) < ($1.grow + $1.shrink, $1.shrink) }
+    }()
+
     /// Picks a radius and type size for a label: the bubble's size comes from its
     /// importance, and only grows if the words genuinely cannot fit.
-    private static func fitLabel(_ text: String, importance: Int) -> (radius: CGFloat, size: CGFloat, block: TextBlock) {
+    private static func fitLabel(_ text: String, importance: Int, shape: NodeShape) -> (radius: CGFloat, size: CGFloat, block: TextBlock) {
         let level = min(max(importance, 1), 5) - 1
         let baseRadius = Metrics.radius[level], baseSize = Metrics.labelSize[level]
         // Try the gentlest adjustments first, trading a slightly bigger bubble against slightly
         // smaller type, so one long word neither balloons the bubble nor shrinks to a whisper.
-        var attempts: [(grow: Int, shrink: Int)] = []
-        for grow in 0...6 { for shrink in 0...3 { attempts.append((grow, shrink)) } }
-        attempts.sort { ($0.grow + $0.shrink, $0.shrink) < ($1.grow + $1.shrink, $1.shrink) }
         var last: (CGFloat, CGFloat, TextBlock)?
-        for attempt in attempts {
+        for attempt in fittingAttempts {
             let radius = (baseRadius * (1 + 0.08 * CGFloat(attempt.grow))).rounded()
             let size = baseSize * (1 - 0.06 * CGFloat(attempt.shrink))
-            let block = TextBlock.make(text, font: Fonts.rounded(size, .semibold), maxWidth: radius * 1.56, maxLines: 3)
+            let block = TextBlock.make(text, font: Fonts.rounded(size, .semibold), maxWidth: shape.geometry(radius).labelWidth, maxLines: 3)
             last = (radius, size, block)
-            if !block.truncated && !block.brokeWord && block.fits(inCircleOfRadius: radius, margin: 10) {
+            if !block.truncated && !block.brokeWord && (shape == .circle ? block.fits(inCircleOfRadius: radius, margin: 10) : block.height < shape.geometry(radius).halfHeight * 2 - 12) {
                 return (radius, size, block)
             }
         }
         return last!
     }
 
-    private static func summaryBlock(_ text: String, radius: CGFloat, size: CGFloat, label: TextBlock) -> TextBlock? {
+    private func summaryBlock(_ text: String, radius: CGFloat, size: CGFloat, label: TextBlock) -> TextBlock? {
         guard !text.isEmpty else { return nil }
         let font = Fonts.rounded(size, .regular)
         let room = radius * 1.34 - label.height - radius * 0.07
         let lines = Int(room / (size * 1.27))
         guard lines >= 2 else { return nil }
-        return TextBlock.make(text, font: font, maxWidth: radius * 1.42, maxLines: min(lines, 6))
+        return TextBlock.make(text, font: font, maxWidth: shape == .circle ? radius * 1.42 : shape.geometry(radius).labelWidth, maxLines: min(lines, 6))
     }
 
     // MARK: - Camera
@@ -294,7 +328,6 @@ final class CanvasView: NSView {
     }
 
     private func moveCamera(center: CGPoint, scale target: CGFloat, animated: Bool) {
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard animated, !reduceMotion, window != nil else {
             cameraAnimation = nil
             setCamera(center: center, scale: target)
@@ -311,9 +344,10 @@ final class CanvasView: NSView {
         guard !list.isEmpty, bounds.width > 40, bounds.height > 40 else { return nil }
         var minX = CGFloat.infinity, minY = CGFloat.infinity, maxX = -CGFloat.infinity, maxY = -CGFloat.infinity
         for i in list {
-            let p = position(i), reach = nodes[i].radius + 22
-            minX = min(minX, p.x - reach); maxX = max(maxX, p.x + reach)
-            minY = min(minY, p.y - reach); maxY = max(maxY, p.y + reach)
+            let p = position(i), geometry = shape.geometry(nodes[i].radius)
+            let rx = geometry.halfWidth + 22, ry = geometry.halfHeight + 22
+            minX = min(minX, p.x - rx); maxX = max(maxX, p.x + rx)
+            minY = min(minY, p.y - ry); maxY = max(maxY, p.y + ry)
         }
         // The vertical margin leaves room for the group names that sit on the clusters' outlines.
         let fitted = min(maxScale, max(bounds.width - 72, 60) / (maxX - minX), max(bounds.height - 96, 60) / (maxY - minY))
@@ -346,10 +380,11 @@ final class CanvasView: NSView {
 
     /// Pans (and, if the text would be unreadably small, zooms) so a bubble is comfortably in view.
     private func reveal(_ index: Int) {
-        let p = viewPoint(position(index)), reach = nodes[index].radius * scale
+        let p = viewPoint(position(index)), geometry = shape.geometry(nodes[index].radius)
+        let rx = geometry.halfWidth * scale, ry = geometry.halfHeight * scale
         let comfortable = bounds.insetBy(dx: min(60, bounds.width / 4), dy: min(60, bounds.height / 4))
-        let visible = comfortable.contains(CGPoint(x: p.x - reach, y: p.y - reach))
-            && comfortable.contains(CGPoint(x: p.x + reach, y: p.y + reach))
+        let visible = comfortable.contains(CGPoint(x: p.x - rx, y: p.y - ry))
+            && comfortable.contains(CGPoint(x: p.x + rx, y: p.y + ry))
         if visible && scale >= 0.6 { return }
         userMovedCamera = true
         moveCamera(center: position(index), scale: max(scale, 0.85), animated: true)
@@ -357,6 +392,8 @@ final class CanvasView: NSView {
 
     /// Frames a bubble together with everything it connects to.
     private func focus(on index: Int) {
+        if focusAnchor == nil { previousCamera = (cameraCenter, scale, userMovedCamera) }
+        focusAnchor = nodes[index].model.id
         select(index: index)
         guard let target = fitTarget([index] + Array(nodes[index].neighbors), maxScale: 1.7) else { return }
         userMovedCamera = true
@@ -386,10 +423,11 @@ final class CanvasView: NSView {
     }
 
     private func select(index: Int?) {
-        guard index != selected else { return }
+        if !additionalSelection.isEmpty { additionalSelection.removeAll() }
+        else if index == selected { return }
         selected = index
         needsDisplay = true
-        onSelectionChanged?(selectedID)
+        selectionChanged()
     }
 
     /// Dims everything that does not match. Returns the number of matching bubbles.
@@ -428,6 +466,148 @@ final class CanvasView: NSView {
         matches = Set(matchOrder)
     }
 
+    func refreshLayout() {
+        layout.reheat(0.6)
+        startAnimating()
+    }
+
+    func export(to url: URL, source: String, wholeGraph: Bool) throws {
+        let oldOffset = offset, oldScale = scale, oldHint = showsHint, oldBanner = banner
+        defer {
+            scale = oldScale
+            offset = oldOffset
+            needsDisplay = true
+            showsHint = oldHint
+            banner = oldBanner
+        }
+        showsHint = false
+        banner = nil
+        if wholeGraph, let fit = fitTarget() { setCamera(center: fit.center, scale: fit.scale) }
+        try Snapshot.write(view: self, source: source, to: url)
+    }
+
+    private func isSelected(_ index: Int) -> Bool {
+        index == selected || additionalSelection.contains(nodes[index].model.id)
+    }
+
+    private func updateAccessibleSelection() {
+        let names = selectionIDs.compactMap { indexByID[$0].map { nodes[$0].model.label } }
+        setAccessibilityValue(names.joined(separator: ", "))
+    }
+
+    private func selectionChanged() {
+        updateAccessibleSelection()
+        needsDisplay = true
+        onSelectionChanged?(selectedID)
+        onStateChanged?()
+        if let selected, window != nil {
+            let label = nodes[selected].model.label
+            let announcement = additionalSelection.isEmpty ? label : "\(label), \(additionalSelection.count + 1) concepts selected"
+            NSAccessibility.post(element: self, notification: .announcementRequested, userInfo: [
+                .announcement: announcement, .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ])
+        }
+    }
+
+    private func toggleSelection(_ index: Int) {
+        var ids = selectionIDs
+        let id = nodes[index].model.id
+        if ids.contains(id) { ids.removeAll { $0 == id } } else { ids.insert(id, at: 0) }
+        selected = ids.first.flatMap { indexByID[$0] }
+        additionalSelection = Set(ids.dropFirst())
+        selectionChanged()
+    }
+
+    private var previousCamera: (CGPoint, CGFloat, Bool)?
+    private var focusAnchor: String?
+
+    func enterNeighborhood() {
+        if let index = selected ?? nodes.indices.first { focus(on: index) }
+    }
+
+    func leaveNeighborhood() {
+        focusAnchor = nil
+        if let (center, zoom, moved) = previousCamera {
+            userMovedCamera = moved
+            moveCamera(center: center, scale: zoom, animated: true)
+        }
+        previousCamera = nil
+        needsDisplay = true
+    }
+
+    private func navigate(backwards: Bool, extending: Bool) {
+        let choices = focusAnchor.flatMap { indexByID[$0] }.map { nodes[$0].neighbors.union([$0]).sorted() } ?? Array(nodes.indices)
+        guard !choices.isEmpty else { return }
+        let cursor = selected.flatMap { choices.firstIndex(of: $0) } ?? (backwards ? 0 : -1)
+        let index = choices[(cursor + (backwards ? -1 : 1) + choices.count) % choices.count]
+        if extending {
+            if let selectedID { additionalSelection.insert(selectedID) }
+            selected = index
+            additionalSelection.remove(nodes[index].model.id)
+            selectionChanged()
+        } else { select(index: index) }
+        reveal(index)
+    }
+
+    var arrangement: Arrangement {
+        var places: [String: Arrangement.Place] = [:]
+        for i in nodes.indices {
+            places[nodes[i].model.id] = .init(point: position(i), pinned: layout.nodes[i].pinned)
+        }
+        return Arrangement(places: places, center: cameraCenter, scale: scale,
+                           automaticCamera: !userMovedCamera, selection: selectionIDs)
+    }
+
+    func restore(_ state: Arrangement) {
+        var restored = 0
+        for i in nodes.indices {
+            guard let place = state.places[nodes[i].model.id] else { continue }
+            layout.nodes[i].x = place.point.x
+            layout.nodes[i].y = place.point.y
+            layout.nodes[i].vx = 0
+            layout.nodes[i].vy = 0
+            layout.nodes[i].pinned = place.pinned
+            restored += 1
+        }
+        guard restored > 0 else { return }
+        if restored == nodes.count { layout.stop() } else { layout.reheat(0.5); startAnimating() }
+        userMovedCamera = !state.automaticCamera
+        cameraAnimation = nil
+        setCamera(center: state.center, scale: min(Metrics.maxScale, max(Metrics.minScale, state.scale)))
+        let ids = state.selection.filter { indexByID[$0] != nil }
+        selected = ids.first.flatMap { indexByID[$0] }
+        additionalSelection = Set(ids.dropFirst())
+        selectionChanged()
+    }
+
+    func resetLayout() {
+        guard let graph else { return }
+        let before = arrangement
+        undoManager?.registerUndo(withTarget: self) { $0.restore(before) }
+        undoManager?.setActionName("Reset Layout")
+        for i in nodes.indices {
+            let seed = ForceLayout.seed(i)
+            layout.nodes[i].x = seed.x
+            layout.nodes[i].y = seed.y
+            layout.nodes[i].vx = 0
+            layout.nodes[i].vy = 0
+            layout.nodes[i].pinned = false
+        }
+        leaveNeighborhood()
+        setGraph(graph)
+        layout.reheat(1)
+        zoomToFit(animated: false)
+        startAnimating()
+    }
+
+    @objc private func unpinBubble(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let index = indexByID[id] else { return }
+        layout.nodes[index].pinned = false
+        layout.reheat(0.4)
+        startAnimating()
+        onStateChanged?()
+    }
+
     // MARK: - Animation
 
     override func viewDidMoveToWindow() {
@@ -454,16 +634,21 @@ final class CanvasView: NSView {
     }
 
     @objc private func step(_ link: CADisplayLink) {
-        let now = CACurrentMediaTime()
-        let elapsed = min(now - lastStep, 0.05)
+        link.isPaused = !advanceFrame(at: CACurrentMediaTime())
+    }
+
+    @discardableResult
+    func advanceFrame(at now: CFTimeInterval) -> Bool {
+        let frameStart = CACurrentMediaTime()
+        let elapsed = min(max(0, now - lastStep), 0.05)
         lastStep = now
         var busy = false
 
         if layout.isActive {
             // Advance the simulation at a steady 60 steps a second whatever the display's refresh rate.
-            simulationDebt += elapsed
+            simulationDebt = min(0.05, simulationDebt + elapsed)
             var steps = 0
-            while simulationDebt >= 1.0 / 60 && steps < 3 {
+            while simulationDebt >= 1.0 / 60 && steps < 3 && CACurrentMediaTime() - frameStart < 0.008 {
                 layout.tick()
                 simulationDebt -= 1.0 / 60
                 steps += 1
@@ -498,7 +683,7 @@ final class CanvasView: NSView {
         }
 
         needsDisplay = true
-        if !busy { link.isPaused = true }
+        return busy
     }
 
     /// How far a newly added bubble has grown, 0…1 with a slight overshoot.
@@ -517,10 +702,10 @@ final class CanvasView: NSView {
     private func node(at viewLocation: CGPoint) -> Int? {
         let p = graphPoint(viewLocation)
         // Topmost first: the selected bubble is drawn last.
-        if let s = selected, hypot(p.x - position(s).x, p.y - position(s).y) <= nodes[s].radius { return s }
+        if let s = selected, shape.geometry(nodes[s].radius).contains(dx: p.x - position(s).x, dy: p.y - position(s).y) { return s }
         for i in nodes.indices.reversed() {
             let c = position(i)
-            if hypot(p.x - c.x, p.y - c.y) <= nodes[i].radius { return i }
+            if shape.geometry(nodes[i].radius).contains(dx: p.x - c.x, dy: p.y - c.y) { return i }
         }
         return nil
     }
@@ -562,10 +747,15 @@ final class CanvasView: NSView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let index = node(at: convert(event.locationInWindow, from: nil)) else { return nil }
-        select(id: nodes[index].model.id, reveal: false)
+        if !isSelected(index) { select(index: index) }
         let menu = NSMenu()
         let item = menu.addItem(withTitle: "Compose Agent Prompt…", action: #selector(promptFromBubble), keyEquivalent: "")
         item.target = self
+        if layout.nodes[index].pinned {
+            let unpin = menu.addItem(withTitle: "Unpin", action: #selector(unpinBubble(_:)), keyEquivalent: "")
+            unpin.target = self
+            unpin.representedObject = nodes[index].model.id
+        }
         return menu
     }
 
@@ -623,6 +813,8 @@ final class CanvasView: NSView {
         case let .node(index, _, _, moved):
             if moved {
                 layout.alphaTarget = 0
+            } else if event.modifierFlags.contains(.shift) {
+                toggleSelection(index)
             } else if event.clickCount >= 2 {
                 focus(on: index)
             } else {
@@ -630,6 +822,7 @@ final class CanvasView: NSView {
             }
         }
         drag = .none
+        onStateChanged?()
         updateHover(at: location)
     }
 
@@ -665,9 +858,14 @@ final class CanvasView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if (123...126).contains(event.keyCode), focusAnchor != nil || event.modifierFlags.contains(.shift) {
+            navigate(backwards: event.keyCode == 123 || event.keyCode == 126, extending: event.modifierFlags.contains(.shift))
+            return
+        }
         let pan: CGFloat = 70
         switch event.keyCode {
-        case 53: select(index: nil)                                   // esc
+        case 36: enterNeighborhood()
+        case 53: if focusAnchor != nil { leaveNeighborhood() } else { select(index: nil) }                                   // esc
         case 123: nudge(dx: pan, dy: 0)                               // ←
         case 124: nudge(dx: -pan, dy: 0)                              // →
         case 125: nudge(dx: 0, dy: -pan)                              // ↓
@@ -706,9 +904,11 @@ final class CanvasView: NSView {
 
         let now = CACurrentMediaTime()
         // With a search or a selection active, everything outside it steps back.
-        let emphasis: Set<Int>? = matches ?? selected.map { nodes[$0].neighbors.union([$0]) }
+        let picked = selectionIDs.compactMap { indexByID[$0] }
+        let emphasis: Set<Int>? = focusAnchor.flatMap { indexByID[$0] }.map { nodes[$0].neighbors.union([$0]) }
+            ?? matches ?? (picked.isEmpty ? nil : Set(picked.flatMap { nodes[$0].neighbors.union([$0]) }))
         let hot = selected ?? hovered
-        let hulls = groups.map { hull(of: $0, now: now) }
+        let hulls = showsGroups ? groups.map { hull(of: $0, now: now) } : []
 
         context.saveGState()
         context.translateBy(x: offset.x, y: offset.y)
@@ -760,9 +960,10 @@ final class CanvasView: NSView {
         var points: [CGPoint] = []
         points.reserveCapacity(group.members.count * 28)
         for member in group.members {
-            let c = position(member), reach = nodes[member].radius * pop(member, now) + 20
+            let c = position(member), geometry = shape.geometry(nodes[member].radius * pop(member, now))
             for k in 0..<28 {
                 let angle = CGFloat(k) / 28 * 2 * .pi
+                let reach = geometry.reach(dx: cos(angle), dy: sin(angle)) + 22
                 points.append(CGPoint(x: c.x + reach * cos(angle), y: c.y + reach * sin(angle)))
             }
         }
@@ -845,16 +1046,18 @@ final class CanvasView: NSView {
     /// A gently bowed arrow between two bubbles. Bowing means A→B and B→A never sit on top of each other.
     private func curve(for edge: Edge, now: CFTimeInterval) -> Curve? {
         let a = position(edge.source), b = position(edge.target)
-        let ra = nodes[edge.source].radius * pop(edge.source, now), rb = nodes[edge.target].radius * pop(edge.target, now)
         let dx = b.x - a.x, dy = b.y - a.y
         let length = hypot(dx, dy)
-        guard length > ra + rb + 6 else { return nil }
+        guard length > 1 else { return nil }
         let bend = min(length * 0.10, 30)
         let control = CGPoint(x: (a.x + b.x) / 2 - dy / length * bend, y: (a.y + b.y) / 2 + dx / length * bend)
         func step(from: CGPoint, toward: CGPoint, by distance: CGFloat) -> CGPoint {
             let l = max(hypot(toward.x - from.x, toward.y - from.y), 0.001)
             return CGPoint(x: from.x + (toward.x - from.x) / l * distance, y: from.y + (toward.y - from.y) / l * distance)
         }
+        let ra = shape.geometry(nodes[edge.source].radius * pop(edge.source, now)).reach(dx: control.x - a.x, dy: control.y - a.y)
+        let rb = shape.geometry(nodes[edge.target].radius * pop(edge.target, now)).reach(dx: control.x - b.x, dy: control.y - b.y)
+        guard length > ra + rb + 6 else { return nil }
         let start = step(from: a, toward: control, by: ra + 3)
         let tip = step(from: b, toward: control, by: rb + 3)
         let end = edge.model.directed ? step(from: b, toward: control, by: rb + 3 + 7 * strokeScale) : tip
@@ -909,7 +1112,11 @@ final class CanvasView: NSView {
             for (index, edge) in edges.enumerated() {
                 let highlighted = hot == edge.source || hot == edge.target
                 guard highlighted == wantHot, let label = edge.label, let curve = curves[index] else { continue }
-                guard highlighted || (emphasis == nil && onScreen >= 6.5) else { continue }
+                switch labels {
+                case .automatic where !highlighted && (emphasis != nil || onScreen < 6.5): continue
+                case .neighborhood where !isSelected(edge.source) && !isSelected(edge.target): continue
+                default: break
+                }
                 let boost = onScreen > 13.5 ? 13.5 / onScreen : (highlighted ? max(1, 11 / onScreen) : 1)
                 let size = CGSize(width: (label.width + 10) * boost, height: (label.lineHeight + 3) * boost)
                 var best: (cost: Int, point: CGPoint, box: CGRect)?
@@ -923,7 +1130,7 @@ final class CanvasView: NSView {
                     for i in nodes.indices {
                         let c = position(i)
                         let nearest = CGPoint(x: min(max(c.x, box.minX), box.maxX), y: min(max(c.y, box.minY), box.maxY))
-                        if hypot(nearest.x - c.x, nearest.y - c.y) < nodes[i].radius + 2 {
+                        if shape.geometry(nodes[i].radius + 2).contains(dx: nearest.x - c.x, dy: nearest.y - c.y) {
                             cost += 1
                             break
                         }
@@ -933,7 +1140,7 @@ final class CanvasView: NSView {
                 }
                 // Nowhere to go without covering another label: leave it out rather than show half
                 // of it. It comes back as soon as either of its bubbles is hovered or selected.
-                guard let best, highlighted || best.cost < 2 else { continue }
+                guard let best, labels != .automatic || highlighted || best.cost < 2 else { continue }
                 taken.append(best.box)
                 placements.append((index, best.point, boost, highlighted))
             }
@@ -963,12 +1170,13 @@ final class CanvasView: NSView {
             let grow = pop(i, now)
             let c = position(i), radius = node.radius * grow
             let dimmed = emphasis.map { !$0.contains(i) } ?? false
-            let isSelected = i == selected, isHovered = i == hovered
+            let isSelected = isSelected(i), isHovered = i == hovered
             if fills[node.group] == nil {
                 fills[node.group] = paint.fill(node.hue)
                 strokes[node.group] = paint.stroke(node.hue)
             }
-            let circle = CGRect(x: c.x - radius, y: c.y - radius, width: radius * 2, height: radius * 2)
+            let geometry = shape.geometry(radius)
+            let outline = geometry.path(at: c)
 
             let fade: CGFloat = paint.isDark ? 0.42 : 0.3
             context.setAlpha(dimmed ? fade : 1)
@@ -976,14 +1184,17 @@ final class CanvasView: NSView {
                 context.setStrokeColor(paint.stroke(node.hue, alpha: 0.32))
                 let halo = max(5 * strokeScale, 5 / scale)
                 context.setLineWidth(halo)
-                context.strokeEllipse(in: circle.insetBy(dx: -halo * 0.9, dy: -halo * 0.9))
+                context.addPath(geometry.path(at: c, padding: halo * 0.9))
+                context.strokePath()
             }
             context.setFillColor(fills[node.group]!)
-            context.fillEllipse(in: circle)
+            context.addPath(outline)
+            context.fillPath()
             let weight: CGFloat = isSelected ? 3 : (isHovered ? 2.4 : 1.5)
             context.setStrokeColor(strokes[node.group]!)
             context.setLineWidth(max(weight * strokeScale, weight * 0.7 / scale))
-            context.strokeEllipse(in: circle)
+            context.addPath(outline)
+            context.strokePath()
 
             // Text is skipped while a bubble is still popping in, and once it is too small to read.
             guard grow > 0.97, node.labelSize * scale >= 5 else { continue }
@@ -1017,7 +1228,10 @@ final class CanvasView: NSView {
             context.setFillColor(paint.tertiaryText)
             label.draw(in: context, centerX: 16 + label.width / 2, top: bounds.height - 14 - label.lineHeight)
         }
-        if showsHint, !hasInteracted, bounds.width > hint.width + 160 {
+        if focusAnchor != nil {
+            TextBlock.make("Neighborhood  ·  Arrow keys to explore  ·  Esc to return", font: .systemFont(ofSize: 12),
+                           maxWidth: bounds.width - 80, maxLines: 1).draw(in: context, centerX: bounds.midX, top: bounds.height - 30)
+        } else if showsHint, !hasInteracted, bounds.width > hint.width + 160 {
             context.setFillColor(paint.tertiaryText)
             hint.draw(in: context, centerX: bounds.midX, top: bounds.height - 14 - hint.lineHeight)
         }

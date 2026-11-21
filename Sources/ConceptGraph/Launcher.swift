@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -5,13 +6,18 @@ import Foundation
 /// command returns immediately, and making sure one graph file gets one window.
 ///
 /// Each viewer holds an exclusive `flock` on a small lock file for as long as it
-/// runs. That lock is the single source of truth for "is this file open?" — it
-/// vanishes with the process however the process ends, so it can never go stale.
+/// runs. The control socket acknowledges requests only after window setup.
 enum Launcher {
     static func canonicalPath(_ path: String) -> String? {
         guard let resolved = realpath(path, nil) else { return nil }
         defer { free(resolved) }
         return String(cString: resolved)
+    }
+
+    static func documentPath(_ path: String) -> String {
+        if let existing = canonicalPath(path) { return existing }
+        let url = URL(fileURLWithPath: path)
+        return url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
     }
 
     /// Per-user temporary directory (independent of `$TMPDIR`, so every caller agrees on it).
@@ -25,6 +31,11 @@ enum Launcher {
     }()
 
     private static func stateFile(for file: String, extension ext: String) -> String {
+        if ext != "lock" {
+            let digest = SHA256.hash(data: Data(file.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+            return (stateDirectory as NSString).appendingPathComponent(digest + "." + ext)
+        }
+        // Preserve the original filename when checking for pre-socket viewers.
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in file.utf8 {
             hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
@@ -32,29 +43,52 @@ enum Launcher {
         return (stateDirectory as NSString).appendingPathComponent(String(hash, radix: 16) + "." + ext)
     }
 
-    static func lockPath(for file: String) -> String { stateFile(for: file, extension: "lock") }
+    static func lockPath(for file: String) -> String { stateFile(for: file, extension: "viewer-lock") }
     static func logPath(for file: String) -> String { stateFile(for: file, extension: "log") }
 
-    /// The process currently showing `file`, if any.
-    static func viewerPID(for file: String) -> pid_t? {
-        let fd = open(lockPath(for: file), O_RDWR | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
-        defer { close(fd) }
-        // The viewer writes its pid just after taking the lock, so allow it a moment.
-        for _ in 0..<25 {
-            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
-                flock(fd, LOCK_UN)
-                return nil
+    static func socketPath(for file: String) -> String { stateFile(for: file, extension: "sock") }
+
+    static func closeViewer(file: String) throws -> Bool {
+        try checkLegacyWindow(file: file)
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        repeat {
+            if let viewer = try ViewerConnection.request(.close, file: file) {
+                try viewer.waitUntilClosed()
+                return true
             }
-            var buffer = [UInt8](repeating: 0, count: 32)
-            let count = pread(fd, &buffer, buffer.count - 1, 0)
-            if count > 0, let pid = pid_t(String(decoding: buffer[0..<count], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)),
-               pid > 0 {
-                return pid
-            }
-            usleep(20_000)
+            // A window may own the file before its controls are ready.
+            guard try isLocked(lockPath(for: file)) else { return false }
+            usleep(40_000)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        throw LaunchError(description: "The document is busy and did not acknowledge close.")
+    }
+
+    static func openViewer(file: String, wait: Bool = false) throws -> (connection: ViewerConnection, existing: Bool) {
+        let request: ViewerConnection.Request = wait ? .focusAndWait : .focus
+        if let connection = try ViewerConnection.request(request, file: file) { return (connection, true) }
+        try checkLegacyWindow(file: file)
+        return (try spawnViewer(file: file, request: request), false)
+    }
+
+    // Older installations use a different protocol. Never interpret a legacy lock as a PID.
+    static func checkLegacyWindow(file: String) throws {
+        if try isLocked(stateFile(for: file, extension: "lock")) {
+            throw LaunchError(description: "Close the older Concept Graph window for \(file) from its File menu first.")
         }
-        return nil
+    }
+
+    private static func isLocked(_ path: String) throws -> Bool {
+        let fd = open(path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else {
+            if errno == ENOENT { return false }
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        defer { close(fd) }
+        var record = Darwin.flock()
+        record.l_type = Int16(F_WRLCK)
+        record.l_whence = Int16(SEEK_SET)
+        guard fcntl(fd, F_GETLK, &record) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        return record.l_type != F_UNLCK
     }
 
     /// The binary that hosts the window: the copy inside ConceptGraph.app when it
@@ -72,7 +106,7 @@ enum Launcher {
 
     /// Starts a viewer for `file` in its own session, detached from this process
     /// and from the caller's terminal, and waits until its window is up.
-    static func spawnViewer(file: String) throws -> pid_t {
+    private static func spawnViewer(file: String, request: ViewerConnection.Request) throws -> ViewerConnection {
         let executable = viewerExecutable()
         let log = logPath(for: file)
 
@@ -88,7 +122,7 @@ enum Launcher {
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 2, log, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        posix_spawn_file_actions_addopen(&actions, 2, log, O_WRONLY | O_CREAT | O_APPEND, 0o600)
 
         var argv: [UnsafeMutablePointer<CChar>?] = [executable, "__viewer", file].map { strdup($0) }
         argv.append(nil)
@@ -104,12 +138,28 @@ enum Launcher {
             throw LaunchError(description: "could not start the viewer (\(String(cString: strerror(result)))): \(executable)")
         }
 
-        // Ready means the viewer holds the lock. Dying first means something is wrong.
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline {
-            if viewerPID(for: file) != nil { return pid }
+        // Only a viewer with a configured window can acknowledge a request.
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        let child = pid
+        var reaped = false
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let winner = try ViewerConnection.request(request, file: file) {
+                if !reaped {
+                    // File → Open can leave the parent viewer running after the child closes.
+                    let monitor = DispatchSource.makeProcessSource(identifier: child, eventMask: .exit, queue: .global())
+                    monitor.setEventHandler {
+                        var status: Int32 = 0
+                        while waitpid(child, &status, 0) < 0 && errno == EINTR {}
+                        monitor.cancel()
+                    }
+                    monitor.resume()
+                }
+                return winner
+            }
             var status: Int32 = 0
-            if waitpid(pid, &status, WNOHANG) == pid {
+            if !reaped && waitpid(child, &status, WNOHANG) == child {
+                reaped = true
+                if status == 0 { continue }
                 let output = (try? String(contentsOfFile: log, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 throw LaunchError(description: "the viewer exited before showing a window"
                     + (output.isEmpty ? "" : ":\n\(output)") + "\n(log: \(log))")
@@ -118,44 +168,23 @@ enum Launcher {
         }
         throw LaunchError(description: "the viewer started (pid \(pid)) but did not report a window within 10 seconds (log: \(log))")
     }
-
-    /// Blocks until no viewer holds `file` any more, i.e. until the user closes the window.
-    static func waitUntilClosed(file: String) {
-        let fd = open(lockPath(for: file), O_RDWR | O_CLOEXEC)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
-        while flock(fd, LOCK_EX) != 0 && errno == EINTR {}
-        flock(fd, LOCK_UN)
-    }
 }
 
 /// Held by a viewer for its whole life. See `Launcher`.
 final class InstanceLock {
     private let fd: Int32
 
-    init?(file: String) {
-        let descriptor = open(Launcher.lockPath(for: file), O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
-        guard descriptor >= 0 else { return nil }
-        // Another process may be holding the lock for an instant just to test it.
-        var locked = false
-        for _ in 0..<15 {
-            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
-                locked = true
-                break
-            }
-            usleep(20_000)
-        }
-        guard locked else {
+    init?(file: String) throws {
+        let descriptor = open(Launcher.lockPath(for: file), O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let error = errno
             close(descriptor)
-            return nil
+            if error == EWOULDBLOCK { return nil }
+            throw POSIXError(.init(rawValue: error) ?? .EIO)
         }
-        ftruncate(descriptor, 0)
-        let text = "\(getpid())\n"
-        _ = text.withCString { pwrite(descriptor, $0, strlen($0), 0) }
         fd = descriptor
     }
 
-    deinit {
-        close(fd)
-    }
+    deinit { close(fd) }
 }

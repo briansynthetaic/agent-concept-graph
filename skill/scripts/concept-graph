@@ -1,12 +1,6 @@
 #!/bin/bash
-# Entry point for the concept-graph skill. Runs the viewer binary that sits in
-# ../bin, building it first if this is a fresh checkout that has never been built.
+# Run the CLI from the installed skill, or build it in a fresh checkout.
 set -euo pipefail
-
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "error: the concept-graph viewer is a native macOS app and cannot run on $(uname -s)" >&2
-  exit 1
-fi
 
 # Follow symlinks, so this works when the skill is linked into ~/.claude/skills.
 SOURCE="${BASH_SOURCE[0]}"
@@ -21,10 +15,10 @@ BIN="$SKILL_DIR/bin/concept-graph"
 if [ ! -x "$BIN" ]; then
   BUILD="$SKILL_DIR/../scripts/build.sh"
   if [ -x "$BUILD" ]; then
-    echo "concept-graph: building the viewer (first run only, about half a minute)…" >&2
-    "$BUILD" >&2
+    echo "concept-graph: building the CLI (first run only)…" >&2
+    "$BUILD" --if-missing >&2
   else
-    echo "error: the viewer has not been built: $BIN is missing." >&2
+    echo "error: the concept-graph CLI has not been built: $BIN is missing." >&2
     echo "Run 'make' in the concept-graph source checkout, then copy or link its skill/ directory here." >&2
     exit 1
   fi

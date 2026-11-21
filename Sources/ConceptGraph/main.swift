@@ -1,23 +1,36 @@
 import Foundation
 
-let usage = """
-concept-graph — show a concept graph (bubbles and labelled arrows) in a native macOS window.
+let authoringUsage = """
+  concept-graph save <destination.conceptgraph>
+      Read graph JSON from standard input, validate it, and atomically replace the destination.
 
-usage:
+  concept-graph validate <graph>
+      Check a .conceptgraph or .json document without opening a window.
+"""
+
+#if os(macOS)
+let viewerUsage = """
   concept-graph open <graph.json> [--wait]
       Validate the file and show it. Returns as soon as the window is up; the window
       runs as its own process, reloads whenever the file changes, and exits when the
       user closes it. Running it again on a file that is already open just refreshes
       that window and brings it to the front. --wait blocks until the window is closed.
 
-  concept-graph validate <graph.json>
-      Check the file and report every problem, without opening anything.
-
   concept-graph render <graph.json> --out <image.png> [--size 1600x1000] [--light | --dark]
-      Draw the graph to a PNG without opening a window (to check how it will look).
+      Draw the graph without opening a window. Size is in points, at 2 pixels per point.
 
   concept-graph close <graph.json>
       Close the window showing this file, if there is one.
+"""
+#else
+let viewerUsage = "  Open the saved file on a Mac with concept-graph open <graph>."
+#endif
+
+let usage = """
+usage:
+\(authoringUsage)
+
+\(viewerUsage)
 
 exit status: 0 on success, 1 if the graph has errors or the command failed, 64 for bad usage.
 """
@@ -50,15 +63,12 @@ func describe(_ graph: ConceptGraph) -> String {
     return parts.joined(separator: ", ")
 }
 
-/// Loads and checks a graph file, printing every diagnostic. Exits if it cannot be used.
-func loadGraph(_ argument: String) -> (path: String, graph: ConceptGraph) {
-    guard let path = Launcher.canonicalPath(argument) else { fail("no such file: \(argument)") }
-    let result = GraphParser.load(path: path)
+func checkedGraph(_ result: ParseResult, source: String) -> ConceptGraph {
     for diagnostic in result.diagnostics { complain(diagnostic.line) }
     guard let graph = result.graph else {
-        fail("\(plural(result.errors.count, "error")) in \(path) — fix the file and run the command again")
+        fail("\(plural(result.errors.count, "error")) in \(source) — fix the file and run the command again")
     }
-    return (path, graph)
+    return graph
 }
 
 /// Splits arguments into positional values and options. `valued` lists the options that take a value.
@@ -86,38 +96,49 @@ func parse(_ arguments: [String], flags: Set<String>, valued: Set<String> = []) 
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
+    #if os(macOS)
+    if Bundle.main.bundleURL.pathExtension == "app" { DocumentOpener.run() }
+    #endif
     say(usage)
     exit(64)
 }
 arguments.removeFirst()
 
 switch command {
-case "open":
-    let (positional, options) = parse(arguments, flags: ["--wait"])
-    guard positional.count == 1 else { badUsage("open takes exactly one graph file") }
-    let (path, graph) = loadGraph(positional[0])
-    if let pid = Launcher.viewerPID(for: path) {
-        kill(pid, SIGUSR1)
-        say("Already open: refreshed the window for \"\(graph.title)\" and brought it to the front (pid \(pid)).")
-    } else {
-        do {
-            let pid = try Launcher.spawnViewer(file: path)
-            say("Opened \"\(graph.title)\": \(describe(graph)) (pid \(pid)).")
-        } catch {
-            fail("\(error)")
-        }
-    }
-    say("The window follows \(path): rewrite the file to update it. It closes when the user closes it.")
-    if options["--wait"] != nil {
-        Launcher.waitUntilClosed(file: path)
-        say("The window was closed.")
-    }
+case "save":
+    let (positional, _) = parse(arguments, flags: [])
+    guard positional.count == 1 else { badUsage("save takes one destination and reads graph JSON from standard input") }
+    let destination = URL(fileURLWithPath: positional[0])
+    do {
+        let bytes = try FileHandle.standardInput.readToEnd() ?? Data()
+        let graph = checkedGraph(GraphParser.parse(data: bytes), source: "standard input")
+        try bytes.write(to: destination, options: .atomic)
+        say("Saved \"\(graph.title)\" (\(describe(graph))) to \(destination.path)")
+    } catch { fail("could not save \(destination.path): \(error.localizedDescription)") }
 
 case "validate":
     let (positional, _) = parse(arguments, flags: [])
     guard positional.count == 1 else { badUsage("validate takes exactly one graph file") }
-    let (_, graph) = loadGraph(positional[0])
+    let path = positional[0]
+    guard FileManager.default.fileExists(atPath: path) else { fail("no such file: \(path)") }
+    let graph = checkedGraph(GraphParser.load(path: path), source: path)
     say("ok: \"\(graph.title)\" — \(describe(graph))")
+
+#if os(macOS)
+case "open":
+    let (positional, options) = parse(arguments, flags: ["--wait"])
+    guard positional.count == 1 else { badUsage("open takes exactly one graph file") }
+    let (path, graph) = loadGraph(positional[0])
+    do {
+        let (connection, existing) = try Launcher.openViewer(file: path, wait: options["--wait"] != nil)
+        say("\(existing ? "Already open" : "Opened"): \(graph.title) — \(describe(graph)) (pid \(connection.pid)).")
+        say("The window follows \(path): rewrite the file to update it. It closes when the user closes it.")
+        if options["--wait"] != nil {
+            fflush(stdout)
+            try connection.waitUntilClosed()
+            say("The window was closed.")
+        }
+    } catch { fail("\(error)") }
 
 case "render":
     let (positional, options) = parse(arguments, flags: ["--light", "--dark"], valued: ["--out", "--size"])
@@ -125,16 +146,19 @@ case "render":
     guard let out = options["--out"] else { badUsage("render needs --out <image.png>") }
     var size = CGSize(width: 1600, height: 1000)
     if let text = options["--size"] {
-        let parts = text.lowercased().split(separator: "x").compactMap { Double($0) }
-        guard parts.count == 2, (400...6000).contains(parts[0]), (300...6000).contains(parts[1]) else {
+        let parts = text.lowercased().split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]),
+              width.isFinite, height.isFinite, (400...6000).contains(width), (300...6000).contains(height) else {
             badUsage("--size must look like 1600x1000 (between 400x300 and 6000x6000)")
         }
-        size = CGSize(width: parts[0], height: parts[1])
+        size = CGSize(width: width, height: height)
     }
+    guard options["--light"] == nil || options["--dark"] == nil else { badUsage("choose either --light or --dark") }
     let dark: Bool? = options["--dark"] != nil ? true : (options["--light"] != nil ? false : nil)
-    let (_, graph) = loadGraph(positional[0])
+    let (path, graph) = loadGraph(positional[0])
     do {
-        try Snapshot.render(graph: graph, to: out, size: size, dark: dark)
+        try GraphFile.requireDistinct(source: path, destination: URL(fileURLWithPath: out))
+        try Snapshot.render(graph: graph, source: path, to: out, size: size, dark: dark)
         say("Rendered \"\(graph.title)\" (\(describe(graph))) to \(out)")
     } catch {
         fail("\(error)")
@@ -144,24 +168,31 @@ case "close":
     let (positional, _) = parse(arguments, flags: [])
     guard positional.count == 1 else { badUsage("close takes exactly one graph file") }
     // The file itself may already be gone; the window can still be found by its path.
-    let path = Launcher.canonicalPath(positional[0]) ?? URL(fileURLWithPath: positional[0]).standardizedFileURL.path
-    guard let pid = Launcher.viewerPID(for: path) else {
-        say("No window is open for \(path).")
-        break
-    }
-    kill(pid, SIGTERM)
-    Launcher.waitUntilClosed(file: path)
-    say("Closed the window for \(path).")
+    let path = Launcher.documentPath(positional[0])
+    do {
+        if try Launcher.closeViewer(file: path) {
+            say("Closed the window for \(path).")
+        } else {
+            say("No window is open for \(path).")
+        }
+    } catch { fail("\(error)") }
 
 case "__viewer":
     // Internal: the detached process that `open` starts. Runs until the window closes.
     guard arguments.count == 1, let path = Launcher.canonicalPath(arguments[0]) else { fail("__viewer needs a graph file") }
-    let result = GraphParser.load(path: path)
-    guard let graph = result.graph else {
-        for diagnostic in result.errors { complain(diagnostic.line) }
-        exit(1)
-    }
-    ViewerController.run(path: path, graph: graph)
+    do {
+        guard let lock = try InstanceLock(file: path) else { exit(0) }
+        let file = try GraphFile(path)
+        guard let graph = file.result.graph else {
+            file.result.errors.forEach { complain($0.line) }
+            exit(1)
+        }
+        ViewerController.run(path: path, graph: graph, file: file, lock: lock)
+    } catch { fail(error.localizedDescription) }
+#else
+case "open", "render", "close":
+    fail("\(command) requires the macOS viewer. Use save to create a document and open it on your Mac.")
+#endif
 
 case "help", "--help", "-h":
     say(usage)
@@ -169,3 +200,11 @@ case "help", "--help", "-h":
 default:
     badUsage("unknown command \"\(command)\"")
 }
+
+#if os(macOS)
+/// Viewer processes and window ownership use the canonical path to a document.
+func loadGraph(_ argument: String) -> (path: String, graph: ConceptGraph) {
+    guard let path = Launcher.canonicalPath(argument) else { fail("no such file: \(argument)") }
+    return (path, checkedGraph(GraphParser.load(path: path), source: path))
+}
+#endif

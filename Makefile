@@ -1,6 +1,6 @@
-# Concept Graph — a native macOS window that agents feed with JSON.
+# Concept Graph — portable graph documents and a native macOS viewer.
 #
-#   make            build the viewer into skill/bin/
+#   make            build the platform CLI into skill/bin/
 #   make check      build, then run the smoke tests
 #   make install    make the skill available to Claude Code in every project
 #   make uninstall  undo that
@@ -16,7 +16,7 @@ $(error Use AGENT=claude, AGENT=codex, or set SKILLS_DIR)
 endif
 LINK := $(SKILLS_DIR)/concept-graph
 
-.PHONY: build check install uninstall clean demo help
+.PHONY: build check install install-skill uninstall clean demo help
 
 build:
 	./scripts/build.sh
@@ -25,9 +25,13 @@ help:
 	@echo "make demo                  Open a working copy of the system-design example"
 	@echo "make install               Install for Claude Code across projects"
 	@echo "make install AGENT=codex   Install for Codex across projects"
+	@echo "make install-skill         Link the authoring skill without building the CLI"
 	@echo "make uninstall             Remove the link (use the same agent selection)"
-	@echo "make                       Build the viewer after updating the checkout"
-	@echo "make check                 Build and run the checks"
+	@echo "make                       Build the CLI (includes the viewer on macOS)"
+	@echo "make check                 Test document handoff and, on macOS, the viewer"
+	@echo "make check-windows         Test a disposable graph window on this desktop"
+	@echo "make check-build           Test first builds and failed rebuilds in a temporary checkout"
+	@echo "make benchmark             Measure offscreen first frames, reloads and drags"
 
 demo:
 	@set -e; dir=$$(mktemp -d "$${TMPDIR:-/tmp}/concept-graph.XXXXXX"); \
@@ -35,9 +39,14 @@ demo:
 	./skill/scripts/concept-graph open "$$dir/report-delivery.json"
 
 check: build
+	./scripts/check-authoring.sh
+ifeq ($(shell uname -s),Darwin)
 	./scripts/check.sh
+	./scripts/check-canvas.sh
+endif
 
 install: build
+install install-skill:
 	mkdir -p "$(SKILLS_DIR)"
 	@if [ -L "$(LINK)" ] && [ "$$(readlink "$(LINK)")" = "$(CURDIR)/skill" ]; then :; \
 	elif [ -e "$(LINK)" ] || [ -L "$(LINK)" ]; then echo "Already occupied: $(LINK)" >&2; exit 1; \
@@ -49,3 +58,14 @@ uninstall:
 
 clean:
 	rm -rf .build skill/bin
+
+.PHONY: check-windows benchmark
+check-windows: build
+	./scripts/check-windows.sh
+
+benchmark:
+	./scripts/check-canvas.sh --benchmark
+
+.PHONY: check-build
+check-build:
+	./scripts/check-build.sh

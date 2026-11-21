@@ -1,120 +1,151 @@
-# Concept Graph
+# <img src="Resources/ConceptGraph.svg" width="40" alt=""> Concept Graph
 
-Concept Graph is a skill for an agent running on your Mac. Ask it to map a conversation, explain a codebase, or sketch a system design. Concept Graph opens the answer in a native Mac window. Click a bubble to read the reasoning, follow an arrow to a related idea, or drag concepts into an arrangement that helps you think. The agent supplies the ideas and relationships. The viewer handles their size, color, and layout.
+Ask an agent to map a conversation, explain a codebase, or sketch a system design. A remote agent can save the answer as a single graph document in your repository. Open it on your Mac to inspect each concept, follow the relationships, or drag the bubbles into an arrangement that helps you think.
 
 ![Concept Graph showing how Git stores history](docs/screenshot.png)
 
-## Install once on your Mac
+## Open your first graph
 
-You need **macOS 14 or later** and the **Xcode Command Line Tools**. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
+You'll need macOS 14 or later, Homebrew, and the Xcode Command Line Tools. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
 
-With Homebrew installed, run:
+**In Terminal**, tap the repository and install the viewer.
 
-```bash
+```sh
 brew tap briansynthetaic/concept-graph https://github.com/briansynthetaic/agent-concept-graph.git
-brew install briansynthetaic/concept-graph/concept-graph
+brew install concept-graph
 ```
 
-Homebrew prints the next step. Run the command for each agent you use:
+Run the link command for each agent you use.
 
-| Agent | Run in Terminal |
+| Agent | Terminal command |
 |---|---|
 | Claude Code | `concept-graph link claude` |
 | Codex | `concept-graph link codex` |
-| Other agent that supports linked skills | `concept-graph link --dir "/path/to/skills"` |
+| Another agent with linked skills | `concept-graph link --dir "/path/to/skills"` |
 
-You can see these instructions again with `brew info concept-graph`. If you're switching from a checkout installation, run its `make uninstall` for Claude Code or `make uninstall AGENT=codex` for Codex in the original checkout before linking that agent through Homebrew.
+**In your agent chat**, ask for a specific graph.
 
-### Install from source
+> Map a scheduled report delivery system. Include the schedule API, run planner, run ledger, and delivery worker. Show who creates a run and who records its outcome.
 
-Clone the repository somewhere you plan to keep it. If you already have a checkout, open Terminal in that folder and skip this step.
+Start a fresh agent session if the skill was installed while your chat was open. You can also type `/concept-graph` in Claude Code or `$concept-graph` in Codex followed by your request. Invoking the skill by itself maps the conversation so far.
 
-```bash
-git clone https://github.com/briansynthetaic/agent-concept-graph.git
-cd agent-concept-graph
+## Run the agent on Linux and view the graph on your Mac
+
+Connect from your Mac as usual, for example with `ssh devbox`. In the Linux
+session, run `make install AGENT=codex` from this source checkout
+(or `make install AGENT=claude`). The Linux source build uses Make, Perl and
+Swift 5.9 or later. If the machine has no Swift toolchain, use
+`make install-skill AGENT=codex` to link just the skill. The agent can then
+write the JSON directly for validation on your Mac. Open the resulting
+document with the Homebrew viewer or a source build.
+
+Start the agent in your project directory on Linux and ask it to save the graph.
+
+> Map the report delivery flow and save it as `./delivery.conceptgraph` in this repository.
+
+The agent returns the absolute Linux path. In a **local Terminal tab on your
+Mac**, run the following with your usual SSH host and that path. Here
+`devbox` is the SSH alias and `/home/alex/reports` is the project on Linux.
+
+```sh
+scp 'devbox:/home/alex/reports/delivery.conceptgraph' ./ && concept-graph open ./delivery.conceptgraph
 ```
 
-Choose the install command for the agent you use. Each command builds the viewer and makes the skill available across projects for your Mac user account.
+You can keep the SSH session open. To see a later edit, repeat the copy into
+the same local folder. The viewer follows that local file. If you already
+synced the graph through the repository, just run the open command in your
+Mac checkout. For a source-installed Mac viewer, use its
+`skill/scripts/concept-graph` launcher.
 
-| Agent | Run in the checkout | Installed skill |
-|---|---|---|
-| Claude Code | `make install` | `~/.claude/skills/concept-graph` |
-| Codex | `make install AGENT=codex` | `~/.agents/skills/concept-graph` |
+### Generate the document from a script on Linux
 
-If you use both agents, run both commands. The installed links point back to this checkout. For another local agent that supports symlinked skill directories, run `make install SKILLS_DIR="/path/to/its/skills"` with its actual skills folder. An agent with local shell access can also run the launcher directly.
+The agent can pipe JSON from a transform to `save`. This example writes the
+graph in the caller's working directory.
 
-## Ask your agent for a graph
+```sh
+CG=~/.agents/skills/concept-graph/scripts/concept-graph  # Codex source install
+"$CG" save ./delivery.conceptgraph <<'JSON'
+{
+  "title": "Report delivery",
+  "nodes": [
+    {"id": "planner", "label": "Planner", "summary": "Queues each scheduled report."},
+    {"id": "worker", "label": "Worker", "summary": "Delivers the queued report."}
+  ],
+  "edges": [{"from": "planner", "to": "worker", "label": "queues work for"}]
+}
+JSON
+```
 
-In the conversation you want to visualize, ask in plain language:
+`save` checks the input with the viewer's parser and writes the original JSON
+bytes. A successful save atomically replaces the destination. Invalid input
+leaves any previous version intact. An agent that writes its own file can
+check it with `"$CG" validate ./delivery.conceptgraph`.
 
-> Show me a concept graph of the two caching approaches we discussed. Include what each one speeds up and why we chose one. Leave out deployment.
+## Follow a delivery from schedule to outcome
 
-You can also invoke the skill directly. Type one of these **in your agent chat** and put what you want drawn after the skill name.
+1. Open the graph from the request above. To follow the exact example illustrated here from a source checkout, run `make demo`.
+2. Click **Delivery worker**. Its inspector explains the run key that makes a retry safe. Click **Run ledger** under Connections to see what happens to an expired claim.
 
-| Agent | Example shortcut |
-|---|---|
-| Claude Code | `/concept-graph Map only the caching options and our decision.` |
-| Codex CLI or IDE | `$concept-graph Map only the caching options and our decision.` |
+   <img src="docs/delivery-worker.png" width="324" alt="Delivery worker inspector showing the provider idempotency key and its claims and records outcomes connection to Run ledger.">
 
-The agent uses the conversation and opens the graph in a Mac window. In a conversation already underway, invoking the skill by itself maps the discussion so far. If your agent was running during installation and cannot find the skill, start a fresh session.
+3. Right-click **Delivery worker** and choose **Compose Agent Prompt…**. Ask “If delivery succeeds but the ledger write fails, how does a retry avoid sending twice?” Preview the prompt, copy it and paste it into the same agent chat. **Expand the graph** includes the document path so the agent can add the answer to the open graph.
+4. Choose **Build this system (whole graph)** to copy an implementation prompt that includes every component, relationship and reference in the design.
 
-You can specify the **source**, **scope**, and **output** in the same request:
+## Keep a graph on your Mac
 
-- **From code:** “Map the checkout request from the HTTP handler to the database. Include retries and skip the UI.”
-- **Update an open graph:** “Add the timeout behavior we just agreed on to the payment worker.”
-- **Export an image:** “Save a PNG of just the payment flow as `payment-flow.png` in this project.”
+Choose **File → Save As…** (⇧⌘S) to keep a scratch graph as a named `.conceptgraph` or `.json` file. The copy opens in its own window with its own prompt path. Your original window continues to follow the original file. If the agent's latest edit is invalid or the file has disappeared, **Save Last Valid Revision** saves the revision you can still read.
 
-## Work through a design with your agent
+Drag a bubble to pin it. Concept Graph keeps positions, camera and selection in your Mac user's Application Support folder, keyed to the graph's path. Agent edits preserve surviving IDs. Save As copies the arrangement. A colleague who receives just the JSON gets a fresh layout.
 
-Right-click a bubble and choose **Compose Agent Prompt…**. For example, on a delivery worker you might ask “What happens if delivery succeeds but recording the outcome fails?” Choose **Copy Prompt**, then paste it into your agent conversation. The toolbar prompt button and ⇧⌘P also open the composer.
+Reopen a document with **File → Open…** (⌘O), **Open Recent**, or by opening a `.conceptgraph` file in Finder. Linking a Homebrew installation registers the bundled viewer with Finder. If Finder asks for an application, choose the built **ConceptGraph.app**. Both the open panel and CLI also accept ordinary graph JSON.
 
-| Choose | What the agent receives |
-|---|---|
-| Ask a question | Your question, the selected concept, and its direct connections. With nothing selected, the context covers the whole graph. |
-| Expand the graph | Your request, the relevant concepts, and the file path so the agent can deepen an explanation or add a missing relationship. |
-| Build this system | Implementation instructions and the entire design, including concept details and references, even when a bubble is selected. |
+**File → Export PNG…** shows the output dimensions. **Current View** exports the canvas at your current zoom and pan. **Whole Graph** fits all the bubbles using their live positions.
 
-The clipboard handoff puts you in control of which conversation receives a prompt. Dragging bubbles changes the view locally. To record a design decision, ask the agent to add it to the graph.
-
-## Navigate the window
+## Navigation and shortcuts
 
 | To | Do this |
 |---|---|
-| Read a concept | Click its bubble. The inspector shows its explanation and connections. |
-| Explore its neighborhood | Double-click the bubble to frame it with its neighbors, or click a connected concept in the inspector. |
-| Move a bubble or pan | Drag the bubble or the background. |
-| Zoom | Pinch or use the toolbar. Zoom in to reveal arrow labels and bubble summaries. |
+| Read a concept | Click its bubble. Follow a connection by clicking its name in the inspector. |
+| Explore a neighborhood | Double-click a bubble or press Return on the canvas. Use arrow keys to visit the concept and its neighbors. Escape restores the previous camera. |
+| Ask about several concepts | Shift-click bubbles or use Shift–arrow on the canvas. Press ⇧⌘P, choose whether to include neighbors, and review the prompt. |
 | Find a concept | Press ⌘F, type a term, then press Return to step through matches. |
-| See the whole graph | Press ⌘0. |
+| Move around | Drag the background to pan. Pinch to zoom. Press ⌘0 to fit the graph. |
+| Release a bubble | Right-click a pin and choose **Unpin**. **View → Reset Layout** releases all pins and recomputes positions. Use ⌘Z to undo it. |
+| Adjust the drawing | Under **View**, choose when relationship labels appear and whether to show group regions. |
+| Change shapes or motion | In **Concept Graph → Settings…** (⌘,), choose circles or rounded rectangles. Motion follows the system preference by default. |
 
-The inspector also provides a text outline for VoiceOver. Groups can organize related concepts on the canvas. Each concept is a single bubble.
+The inspector includes a text outline for VoiceOver. The canvas announces the selected concept during keyboard exploration.
 
 ## Update or uninstall
 
-**Homebrew installation.** Run `brew upgrade concept-graph`, then reopen existing graph windows. Every agent you linked uses the updated skill and viewer. To uninstall, run `concept-graph unlink claude` or `concept-graph unlink codex` for each linked agent (or `unlink --dir` with the custom path), then `brew uninstall concept-graph`.
+For Homebrew, run `brew upgrade concept-graph` and reopen your graph windows. Before uninstalling, run `concept-graph unlink claude`, `concept-graph unlink codex`, or `concept-graph unlink --dir "/path/to/skills"` for each agent you linked. Then run `brew uninstall concept-graph`.
 
-**Source installation.** From the original checkout, pull the latest changes and rebuild:
+For a source installation, run `git pull --ff-only && make` in the original checkout, then reopen graph windows. Use `make uninstall` for Claude Code, `make uninstall AGENT=codex` for Codex, or the original `SKILLS_DIR` for a custom agent. When switching installations, unlink the old one first.
 
-```bash
-git pull --ff-only && make
+## Build and check the source
+
+```sh
+git clone https://github.com/briansynthetaic/agent-concept-graph.git
+cd agent-concept-graph
+make
 ```
 
-Close and reopen any running graph windows to use the new viewer. All linked agents use the same updated checkout, so one rebuild covers them all.
+Use `make install` to link Claude Code, `make install AGENT=codex` for Codex, or `make install SKILLS_DIR="/path/to/skills"` for another agent. The links point to this checkout. On macOS the built app is in `skill/bin/ConceptGraph.app`.
 
-To remove the installed link, run `make uninstall` for Claude Code or `make uninstall AGENT=codex` for Codex. For a custom skills folder, pass the same `SKILLS_DIR` you used at install time.
+From the checkout, try the CLI with a disposable copy.
 
-## Use the command line
-
-Homebrew installs the `concept-graph` command on your PATH. The examples below use the source launcher and sample files. Run these examples from the checkout. From another directory, use the launcher's absolute path.
-
-```bash
+```sh
 CG=./skill/scripts/concept-graph
-"$CG" validate skill/examples/git-internals.json
-"$CG" open skill/examples/git-internals.json
-"$CG" render skill/examples/git-internals.json --out git-internals.png
-"$CG" close skill/examples/git-internals.json
+work=$(mktemp -d)
+cp skill/examples/report-delivery.json "$work/delivery.json"
+"$CG" validate "$work/delivery.json"
+"$CG" open "$work/delivery.json"
+"$CG" render "$work/delivery.json" --out "$work/delivery.png" --size 1200x800
+"$CG" close "$work/delivery.json"
 ```
 
-Opening a graph returns control to the terminal immediately. Add `--wait` to wait for the window to close. Opening the same file again brings its window forward. If an edit produces invalid JSON, the viewer shows the last valid graph and explains the error.
+`open` returns when the window is ready. Add `--wait` to wait for that window to close. Reopening the same file focuses its window. The CLI render size is in points. At two pixels per point, the example produces a 2400 × 1600 PNG with the inspector.
 
-For more examples, see the [Git walkthrough](skill/examples/git-internals.json), [conversation map](skill/examples/conversation.json), and [system design](skill/examples/report-delivery.json). The [agent skill](skill/SKILL.md) describes the everyday workflow. The [field reference](skill/references/format.md) documents the full JSON format. Run `make help` for common commands or `make check` to build and test the viewer.
+Run `make check` on Linux or macOS to test saving and validating portable documents. On macOS it also checks offscreen rendering, documents, prompts and viewer commands. Run `make check-build` on a Mac to exercise concurrent first builds and a failed rebuild in a disposable checkout. On a logged-in Mac, `make check-windows` exercises the window lifecycle and Finder opening with a temporary document. `make benchmark` times the first offscreen frame, revision processing, and simulated drag frames on sparse and denser maps.
+
+See the [delivery system](skill/examples/report-delivery.json), [Git walkthrough](skill/examples/git-internals.json), [conversation map](skill/examples/conversation.json), [agent skill](skill/SKILL.md), and [graph format](skill/references/format.md).
