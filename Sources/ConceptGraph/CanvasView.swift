@@ -59,6 +59,7 @@ final class CanvasView: NSView {
     private(set) var style = GraphStyle(graph: ConceptGraph(title: "", summary: "", groups: [], nodes: [], edges: [], focus: nil))
 
     /// Called when the user (or a search, or a link in the inspector) changes the selection.
+    var onPrompt: (() -> Void)?
     var onSelectionChanged: ((String?) -> Void)?
 
     /// A problem to show across the top of the canvas, e.g. a live update that failed to parse.
@@ -558,6 +559,17 @@ final class CanvasView: NSView {
             needsDisplay = true
         }
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let index = node(at: convert(event.locationInWindow, from: nil)) else { return nil }
+        select(id: nodes[index].model.id, reveal: false)
+        let menu = NSMenu()
+        let item = menu.addItem(withTitle: "Compose Agent Prompt…", action: #selector(promptFromBubble), keyEquivalent: "")
+        item.target = self
+        return menu
+    }
+
+    @objc private func promptFromBubble() { onPrompt?() }
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)

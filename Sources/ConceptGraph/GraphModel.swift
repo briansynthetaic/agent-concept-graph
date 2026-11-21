@@ -208,8 +208,7 @@ enum GraphParser {
                     var importance = 3
                     if let rawImportance = dict["importance"], !(rawImportance is NSNull) {
                         if let number = rawImportance as? NSNumber, !isBool(number) {
-                            let rounded = Int(number.doubleValue.rounded())
-                            importance = min(5, max(1, rounded))
+                            importance = Int(min(5, max(1, number.doubleValue.rounded())))
                             if Double(importance) != number.doubleValue {
                                 warn("\(path).importance", "must be a whole number from 1 to 5, using \(importance) instead of \(number)")
                             }

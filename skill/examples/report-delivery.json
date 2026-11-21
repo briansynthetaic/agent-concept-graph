@@ -1,0 +1,15 @@
+{
+  "title": "Scheduled report delivery",
+  "summary": "Teams schedule a daily report and can inspect the outcome of each delivery.",
+  "nodes": [
+    {"id":"schedule","label":"Schedule API","summary":"Stores a team's delivery time, time zone and destination.","detail":"Reject invalid time zones and let a team pause future deliveries."},
+    {"id":"planner","label":"Run planner","summary":"Creates a pending run when a schedule comes due.","detail":"Use the schedule ID and local report date as the run key so planner retries cannot enqueue duplicate runs."},
+    {"id":"runs","label":"Run ledger","summary":"Tracks pending, claimed, delivered and failed runs.","detail":"Expose the latest outcome and failure reason to the owning team. Expired claims become eligible for retry."},
+    {"id":"worker","label":"Delivery worker","summary":"Claims a pending run, renders the report and sends it.","detail":"Pass the run key to the delivery provider for idempotency. Record success or the failure reason in the ledger."}
+  ],
+  "edges": [
+    {"from":"planner","to":"schedule","label":"reads due schedules"},
+    {"from":"planner","to":"runs","label":"creates pending runs"},
+    {"from":"worker","to":"runs","label":"claims and records outcomes"}
+  ]
+}

@@ -66,6 +66,32 @@ expect "a missing file is reported" 1 "no such file" "$CG" validate "$WORK/nope.
 expect "open refuses an invalid graph" 1 "fix the file" "$CG" open "$WORK/typo.json"
 expect "an unknown command is a usage error" 64 "unknown command" "$CG" frobnicate
 
+cat > "$WORK/importance.json" <<'JSON'
+{"title":"t","nodes":[{"id":"a","label":"A","summary":"s","importance":1e100}]}
+JSON
+expect "extreme importance is clamped" 0 "using 5" "$CG" validate "$WORK/importance.json"
+
+echo "agent prompts"
+cat > "$WORK/main.swift" <<'SWIFT'
+import Foundation
+
+let path = CommandLine.arguments[1]
+let graph = GraphParser.load(path: path).graph!
+let worker = graph.nodes.first { $0.id == "worker" }!
+let question = "How are retries handled?"
+let ask = PromptTask.explain.compose(graph: graph, path: path, focus: worker, question: question)
+precondition([question, path, worker.detail, "Run ledger", "claims and records outcomes"].allSatisfy(ask.contains))
+precondition(ask.hasPrefix(question) && !ask.contains("Schedule API"))
+let build = PromptTask.build.compose(graph: graph, path: path, focus: worker, question: "")
+precondition(graph.nodes.allSatisfy { build.contains($0.detail) })
+precondition(graph.edges.allSatisfy { build.contains($0.label) })
+let expand = PromptTask.expand.compose(graph: graph, path: path, focus: nil, question: "")
+precondition(expand.contains(path) && expand.contains("Preserve existing IDs"))
+SWIFT
+if swiftc "$ROOT/Sources/ConceptGraph/GraphModel.swift" "$ROOT/Sources/ConceptGraph/AgentPrompt.swift" "$WORK/main.swift" -o "$WORK/prompts"; then
+  expect "concept and whole-design prompt scope" 0 "" "$WORK/prompts" "$ROOT/skill/examples/report-delivery.json"
+else fail "compile prompt checks"; fi
+
 echo "rendering"
 expect "render writes an image" 0 "Rendered" "$CG" render "$ROOT/skill/examples/git-internals.json" --out "$WORK/out.png" --size 1200x800
 if [ "$(sips -g pixelWidth "$WORK/out.png" 2>/dev/null | awk '/pixelWidth/ {print $2}')" = "2400" ]; then pass "the image is 1200 points wide at 2x"

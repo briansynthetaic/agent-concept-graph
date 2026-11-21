@@ -1,6 +1,7 @@
 import AppKit
 
 private extension NSToolbarItem.Identifier {
+    static let agent = NSToolbarItem.Identifier("agent")
     static let zoom = NSToolbarItem.Identifier("zoom")
     static let search = NSToolbarItem.Identifier("search")
 }
@@ -57,6 +58,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         NSApp.mainMenu = makeMenu()
         makeWindow()
 
+        canvas.onPrompt = { [weak self] in self?.composePrompt(nil) }
         canvas.onSelectionChanged = { [weak self] _ in self?.refreshInspector() }
         inspector.onNavigate = { [weak self] id in self?.canvas.select(id: id, reveal: true) }
         canvas.setGraph(graph)
@@ -195,7 +197,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // MARK: - Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, .zoom, .search, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
+        [.agent, .flexibleSpace, .zoom, .search, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -205,6 +207,14 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
+        case .agent:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Agent Prompt"
+            item.toolTip = "Compose a prompt for your agent"
+            item.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: item.label)
+            item.target = self
+            item.action = #selector(composePrompt(_:))
+            return item
         case .zoom:
             let names = ["minus.magnifyingglass", "plus.magnifyingglass", "arrow.up.left.and.arrow.down.right"]
             let labels = ["Zoom Out", "Zoom In", "Zoom to Fit"]
@@ -228,6 +238,38 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return item
         default:
             return nil
+        }
+    }
+
+    @objc private func composePrompt(_ sender: Any?) {
+        let snapshot = graph
+        let focus = snapshot.nodes.first { $0.id == canvas.selectedID }
+        let sheet = NSAlert()
+        sheet.messageText = "Compose an agent prompt"
+        sheet.informativeText = "Ask about \(focus?.label ?? snapshot.title), expand it, or build from the entire graph. Paste the copied prompt into your agent conversation."
+        let task = NSPopUpButton(frame: .zero)
+        task.addItems(withTitles: PromptTask.allCases.map(\.title))
+        let request = NSTextField(wrappingLabelWithString: "")
+        request.isEditable = true
+        request.isBezeled = true
+        request.drawsBackground = true
+        request.placeholderString = "Question or additional instructions (optional)"
+        request.setAccessibilityLabel("Question or additional instructions")
+        let stack = NSStackView(views: [task, request])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 110)
+        request.widthAnchor.constraint(equalToConstant: 380).isActive = true
+        request.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        sheet.accessoryView = stack
+        sheet.addButton(withTitle: "Copy Prompt")
+        sheet.addButton(withTitle: "Cancel")
+        sheet.window.initialFirstResponder = request
+        sheet.beginSheetModal(for: window) { [path] response in
+            guard response == .alertFirstButtonReturn, let action = PromptTask(rawValue: task.indexOfSelectedItem) else { return }
+            let prompt = action.compose(graph: snapshot, path: path, focus: focus, question: request.stringValue)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(prompt, forType: .string)
         }
     }
 
@@ -291,11 +333,14 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             add(menu, "Quit \(name)", #selector(NSApplication.terminate(_:)), "q")
         }
         submenu("File") { menu in
+            add(menu, "Compose Agent Prompt…", #selector(composePrompt(_:)), "p", [.command, .shift], target: self)
             add(menu, "Show Graph File in Finder", #selector(revealFile(_:)), "r", [.command, .shift], target: self)
             menu.addItem(.separator())
             add(menu, "Close", #selector(NSWindow.performClose(_:)), "w")
         }
         submenu("Edit") { menu in
+            add(menu, "Cut", #selector(NSText.cut(_:)), "x")
+            add(menu, "Paste", #selector(NSText.paste(_:)), "v")
             add(menu, "Copy", #selector(NSText.copy(_:)), "c")
             add(menu, "Select All", #selector(NSText.selectAll(_:)), "a")
             menu.addItem(.separator())
