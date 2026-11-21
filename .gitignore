@@ -1,3 +1,4 @@
 .build/
 skill/bin/
 .DS_Store
+tmp/
