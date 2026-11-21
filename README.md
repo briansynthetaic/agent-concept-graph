@@ -8,6 +8,25 @@ Concept Graph is a skill for an agent running on your Mac. Ask it to map a conve
 
 You need **macOS 14 or later** and the **Xcode Command Line Tools**. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
 
+With Homebrew installed, run:
+
+```bash
+brew tap briansynthetaic/concept-graph https://github.com/briansynthetaic/agent-concept-graph.git
+brew install briansynthetaic/concept-graph/concept-graph
+```
+
+Homebrew prints the next step. Run the command for each agent you use:
+
+| Agent | Run in Terminal |
+|---|---|
+| Claude Code | `concept-graph link claude` |
+| Codex | `concept-graph link codex` |
+| Other agent that supports linked skills | `concept-graph link --dir "/path/to/skills"` |
+
+You can see these instructions again with `brew info concept-graph`. If you're switching from a checkout installation, run its `make uninstall` for Claude Code or `make uninstall AGENT=codex` for Codex in the original checkout before linking that agent through Homebrew.
+
+### Install from source
+
 Clone the repository somewhere you plan to keep it. If you already have a checkout, open Terminal in that folder and skip this step.
 
 ```bash
@@ -72,7 +91,9 @@ The inspector also provides a text outline for VoiceOver. Groups can organize re
 
 ## Update or uninstall
 
-From the original checkout, pull the latest changes and rebuild:
+**Homebrew installation.** Run `brew upgrade concept-graph`, then reopen existing graph windows. Every agent you linked uses the updated skill and viewer. To uninstall, run `concept-graph unlink claude` or `concept-graph unlink codex` for each linked agent (or `unlink --dir` with the custom path), then `brew uninstall concept-graph`.
+
+**Source installation.** From the original checkout, pull the latest changes and rebuild:
 
 ```bash
 git pull --ff-only && make
@@ -84,7 +105,7 @@ To remove the installed link, run `make uninstall` for Claude Code or `make unin
 
 ## Use the command line
 
-Run these examples from the checkout. From another directory, use the launcher's absolute path.
+Homebrew installs the `concept-graph` command on your PATH. The examples below use the source launcher and sample files. Run these examples from the checkout. From another directory, use the launcher's absolute path.
 
 ```bash
 CG=./skill/scripts/concept-graph
