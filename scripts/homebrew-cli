@@ -1,0 +1,35 @@
+#!/bin/bash
+# The formula substitutes Homebrew's stable opt path when installing this wrapper.
+set -euo pipefail
+skill='@CONCEPT_GRAPH_SKILL@'
+
+case "${1:-}" in
+  link|unlink) action="$1"; shift ;;
+  *) exec "$skill/scripts/concept-graph" "$@" ;;
+esac
+
+case "$#:${1:-}" in
+  1:claude) directory="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills" ;;
+  1:codex) directory="$HOME/.agents/skills" ;;
+  2:--dir) directory="$2" ;;
+  *) echo "Usage: concept-graph $action claude | codex | --dir /path/to/skills" >&2; exit 64 ;;
+esac
+[[ -n "$directory" ]] || { echo "Provide a skills directory." >&2; exit 64; }
+link="$directory/concept-graph"
+if [[ -L "$link" && "$(readlink "$link")" == "$skill" ]]; then
+  if [[ "$action" == unlink ]]; then
+    unlink "$link"
+    echo "Removed $link"
+  else
+    echo "Already linked: $link"
+  fi
+elif [[ -e "$link" || -L "$link" ]]; then
+  echo "Already occupied: $link. For a checkout installation, run make uninstall with its original agent selection first." >&2
+  exit 1
+elif [[ "$action" == link ]]; then
+  mkdir -p "$directory"
+  ln -sh "$skill" "$link"
+  echo "Linked $link"
+else
+  echo "No skill link at $link"
+fi

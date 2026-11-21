@@ -6,6 +6,17 @@ private extension NSToolbarItem.Identifier {
     static let search = NSToolbarItem.Identifier("search")
 }
 
+private final class InspectorSplitController: NSSplitViewController {
+    override func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect,
+                            forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
+        let native = super.splitView(splitView, effectiveRect: proposedEffectiveRect,
+                                     forDrawnRect: drawnRect, ofDividerAt: dividerIndex)
+        guard drawnRect.height > 0,
+              !splitViewItems[dividerIndex + 1].isCollapsed else { return native }
+        return native.union(drawnRect.insetBy(dx: -12, dy: 0)).intersection(splitView.bounds)
+    }
+}
+
 /// The app: one window showing one graph file, for as long as the user keeps it open.
 final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSSearchFieldDelegate {
     private static var shared: ViewerController?
@@ -14,7 +25,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var graph: ConceptGraph
     private let canvas = CanvasView()
     private let inspector = InspectorViewController()
-    private let split = NSSplitViewController()
+    private let split = InspectorSplitController()
     private var window: NSWindow!
     private var searchItem: NSSearchToolbarItem?
     private var lock: InstanceLock?
@@ -115,7 +126,8 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         canvasItem.minimumThickness = 380
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
         inspectorItem.minimumThickness = 280
-        inspectorItem.maximumThickness = 480
+        inspectorItem.maximumThickness = NSSplitViewItem.unspecifiedDimension
+        split.splitView.dividerStyle = .thick
         split.addSplitViewItem(canvasItem)
         split.addSplitViewItem(inspectorItem)
 
