@@ -1,0 +1,107 @@
+{
+  "title": "Where we've got to on the slow CI",
+  "summary": "A map of this conversation so far. We set out to get CI **under 10 minutes**, traced most of the time to a cold dependency cache, and chose remote caching over splitting the repo. Two things are still open: whether the cache can be trusted, and who owns it.",
+  "groups": [
+    { "id": "goal", "label": "What we want" },
+    { "id": "found", "label": "What we found" },
+    { "id": "options", "label": "Options considered" },
+    { "id": "decided", "label": "Decided" },
+    { "id": "open", "label": "Still open", "color": "red" }
+  ],
+  "nodes": [
+    {
+      "id": "target",
+      "label": "CI under 10 minutes",
+      "group": "goal",
+      "importance": 5,
+      "summary": "The goal you opened with: pull requests currently wait about 38 minutes for a green build.",
+      "detail": "You said the pain is context-switching: by the time CI finishes, people have moved on. Ten minutes was your number, chosen because it is short enough to wait for."
+    },
+    {
+      "id": "cold-cache",
+      "label": "Cold dependency cache",
+      "group": "found",
+      "importance": 4,
+      "summary": "Every run reinstalls and rebuilds dependencies from scratch — roughly 21 of the 38 minutes.",
+      "detail": "Found by reading the timing breakdown you pasted from the last ten runs. The cache key includes the commit hash, so it never hits.\n\n- install: ~6 min\n- native rebuilds: ~15 min",
+      "refs": [".github/workflows/ci.yml:41"]
+    },
+    {
+      "id": "serial-tests",
+      "label": "Tests run serially",
+      "group": "found",
+      "importance": 3,
+      "summary": "The integration suite runs on one worker and takes about 11 minutes.",
+      "detail": "The suite shares one database, which is why it was never parallelised. We agreed this is the second-biggest cost but not the first thing to fix."
+    },
+    {
+      "id": "flaky",
+      "label": "Flaky retries",
+      "group": "found",
+      "importance": 2,
+      "summary": "About one run in six is retried, which inflates the average but not the typical run.",
+      "detail": "You raised this; we set it aside as a separate problem."
+    },
+    {
+      "id": "remote-cache",
+      "label": "Remote build cache",
+      "group": "options",
+      "importance": 4,
+      "summary": "Share build outputs between runs so unchanged work is downloaded instead of redone.",
+      "detail": "My estimate was that this takes the dependency phase from ~21 minutes to ~3 on a typical pull request. It needs a storage bucket and a correct cache key."
+    },
+    {
+      "id": "split-repo",
+      "label": "Split the repository",
+      "group": "options",
+      "importance": 2,
+      "summary": "Give each service its own pipeline so a change only builds what it touches.",
+      "detail": "You proposed this. We dropped it for now: it is weeks of work and the shared library changes in most pull requests anyway."
+    },
+    {
+      "id": "shard-tests",
+      "label": "Shard the tests",
+      "group": "options",
+      "importance": 3,
+      "summary": "Run the integration suite on four workers, each with its own database.",
+      "detail": "Would cut ~11 minutes to ~4. Depends on per-worker databases, which nobody has scoped yet."
+    },
+    {
+      "id": "decision",
+      "label": "Cache first, shard second",
+      "group": "decided",
+      "importance": 4,
+      "summary": "We agreed to fix the cache key and add a remote cache this week, then look at sharding.",
+      "detail": "Your reasoning: the cache is the bigger win and the smaller change. Expected result after step one is roughly **20 minutes**; the 10-minute target needs sharding too."
+    },
+    {
+      "id": "trust",
+      "label": "Can the cache be trusted?",
+      "group": "open",
+      "importance": 3,
+      "summary": "You are worried about a stale cache producing a green build that should be red.",
+      "detail": "Not resolved. I suggested a nightly uncached run as a backstop; you wanted to think about it."
+    },
+    {
+      "id": "owner",
+      "label": "Who owns the cache?",
+      "group": "open",
+      "importance": 2,
+      "summary": "Nobody is on the hook for the bucket, its cost, or its eviction policy.",
+      "detail": "You said you would raise it with the platform team. Not discussed further."
+    }
+  ],
+  "edges": [
+    { "from": "cold-cache", "to": "target", "label": "biggest obstacle to" },
+    { "from": "serial-tests", "to": "target", "label": "second obstacle to" },
+    { "from": "flaky", "to": "target", "label": "set aside from", "style": "dashed" },
+    { "from": "remote-cache", "to": "cold-cache", "label": "fixes" },
+    { "from": "shard-tests", "to": "serial-tests", "label": "fixes" },
+    { "from": "split-repo", "to": "cold-cache", "label": "would sidestep", "style": "dashed" },
+    { "from": "decision", "to": "remote-cache", "label": "does first" },
+    { "from": "decision", "to": "shard-tests", "label": "does second" },
+    { "from": "decision", "to": "split-repo", "label": "rejects", "style": "dashed" },
+    { "from": "trust", "to": "remote-cache", "label": "is a risk of", "style": "dashed" },
+    { "from": "owner", "to": "remote-cache", "label": "is unanswered for", "style": "dashed" }
+  ]
+}

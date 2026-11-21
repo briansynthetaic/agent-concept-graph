@@ -1,0 +1,139 @@
+{
+  "title": "How Git stores history",
+  "summary": "Git is a content-addressed object store with a thin layer of movable names on top. **Commits** point at snapshots and at their parents; **branches** are just pointers to commits. Almost every command is a way of creating objects or moving pointers.",
+  "groups": [
+    { "id": "objects", "label": "Object store" },
+    { "id": "refs", "label": "Names" },
+    { "id": "areas", "label": "Where your files live" },
+    { "id": "ops", "label": "Operations" }
+  ],
+  "nodes": [
+    {
+      "id": "commit",
+      "label": "Commit",
+      "group": "objects",
+      "importance": 5,
+      "summary": "A snapshot of the whole project plus a pointer to the commit(s) it came from.",
+      "detail": "A commit stores one **tree** (the full state of the project), zero or more **parent** commits, an author, a committer and a message.\n\nBecause its id is a hash of all of that, changing anything — even the message — produces a *different* commit. That is why history is rewritten rather than edited.",
+      "refs": ["https://git-scm.com/book/en/v2/Git-Internals-Git-Objects"]
+    },
+    {
+      "id": "tree",
+      "label": "Tree",
+      "group": "objects",
+      "importance": 3,
+      "summary": "One directory listing: names mapped to blobs and to other trees.",
+      "detail": "Trees nest, so a single root tree describes every file in the project. Unchanged subdirectories are shared between commits, which is why a snapshot per commit stays cheap."
+    },
+    {
+      "id": "blob",
+      "label": "Blob",
+      "group": "objects",
+      "importance": 2,
+      "summary": "The contents of one file — no name, no permissions, just bytes.",
+      "detail": "Two files with identical contents are the same blob, wherever they live and whatever they are called."
+    },
+    {
+      "id": "hash",
+      "label": "Content hash",
+      "group": "objects",
+      "importance": 3,
+      "summary": "Every object's id is the hash of its contents, so ids double as integrity checks.",
+      "detail": "This is the idea everything else rests on:\n- identical content is stored once\n- an id can never refer to different content later\n- a commit id vouches for its entire history"
+    },
+    {
+      "id": "branch",
+      "label": "Branch",
+      "group": "refs",
+      "importance": 4,
+      "summary": "A movable name for one commit. Committing moves it forward.",
+      "detail": "A branch is a 41-byte file containing a commit id. Creating one copies nothing, and deleting one removes only the name — the commits stay until garbage collection finds them unreachable.",
+      "refs": [".git/refs/heads/"]
+    },
+    {
+      "id": "head",
+      "label": "HEAD",
+      "group": "refs",
+      "importance": 4,
+      "summary": "Where you are right now: normally the name of the current branch.",
+      "detail": "HEAD usually points at a *branch*, not a commit, which is what lets a new commit advance that branch. Pointing it straight at a commit is the \"detached HEAD\" state.",
+      "refs": [".git/HEAD"]
+    },
+    {
+      "id": "remote",
+      "label": "Remote-tracking branch",
+      "group": "refs",
+      "importance": 2,
+      "summary": "Your last-known position of a branch in another repository, e.g. origin/main.",
+      "detail": "These only move when you talk to the remote (`fetch`, `pull`, `push`). They are a memory of the other side, not a live view of it."
+    },
+    {
+      "id": "worktree",
+      "label": "Working tree",
+      "group": "areas",
+      "importance": 3,
+      "summary": "The ordinary files on disk that you edit.",
+      "detail": "Git does not track your edits as you make them. It only compares the working tree with the index and with HEAD when you ask."
+    },
+    {
+      "id": "index",
+      "label": "Index",
+      "group": "areas",
+      "importance": 4,
+      "summary": "The staging area: the exact snapshot the next commit will contain.",
+      "detail": "The index is a complete proposed tree, not a list of changes. `git add` copies a file's current contents into it, which is why edits made *after* `add` are not in the next commit.",
+      "refs": [".git/index"]
+    },
+    {
+      "id": "op-commit",
+      "label": "git commit",
+      "group": "ops",
+      "importance": 3,
+      "summary": "Freezes the index into a tree, wraps it in a commit, and advances the current branch.",
+      "detail": "Nothing in the working tree is read at this point — only the index."
+    },
+    {
+      "id": "merge",
+      "label": "Merge",
+      "group": "ops",
+      "importance": 3,
+      "summary": "Joins two lines of history with a commit that has two parents.",
+      "detail": "Existing commits are untouched; the merge commit records that both histories led here. If one branch is simply ahead of the other, Git just moves the pointer forward instead (a *fast-forward*)."
+    },
+    {
+      "id": "rebase",
+      "label": "Rebase",
+      "group": "ops",
+      "importance": 3,
+      "summary": "Replays your commits on top of a different base, producing new commits with new ids.",
+      "detail": "The result looks linear, but the originals are abandoned and their replacements are different objects. That is harmless for commits nobody else has, and disruptive for commits that are already shared."
+    },
+    {
+      "id": "reflog",
+      "label": "Reflog",
+      "group": "refs",
+      "importance": 2,
+      "summary": "A local diary of every position HEAD and each branch has held.",
+      "detail": "It is the safety net behind most \"I lost my work\" recoveries: commits orphaned by a rebase or a reset stay reachable from the reflog for weeks."
+    }
+  ],
+  "edges": [
+    { "from": "commit", "to": "tree", "label": "snapshots" },
+    { "from": "tree", "to": "blob", "label": "lists" },
+    { "from": "hash", "to": "commit", "label": "identifies" },
+    { "from": "hash", "to": "tree", "label": "identifies" },
+    { "from": "hash", "to": "blob", "label": "identifies" },
+    { "from": "branch", "to": "commit", "label": "points at" },
+    { "from": "head", "to": "branch", "label": "names current" },
+    { "from": "remote", "to": "commit", "label": "remembers" },
+    { "from": "worktree", "to": "index", "label": "git add" },
+    { "from": "index", "to": "op-commit", "label": "is frozen by" },
+    { "from": "op-commit", "to": "commit", "label": "creates" },
+    { "from": "op-commit", "to": "branch", "label": "advances" },
+    { "from": "merge", "to": "commit", "label": "adds two-parent" },
+    { "from": "rebase", "to": "commit", "label": "rewrites" },
+    { "from": "rebase", "to": "merge", "label": "alternative to", "style": "dashed", "directed": false },
+    { "from": "reflog", "to": "head", "label": "records moves of" },
+    { "from": "reflog", "to": "rebase", "label": "can undo", "style": "dashed" }
+  ]
+}
