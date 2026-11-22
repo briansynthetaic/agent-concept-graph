@@ -4,7 +4,32 @@ Ask an agent to map a conversation, explain a codebase, or sketch a system desig
 
 ![Concept Graph showing how Git stores history](docs/screenshot.png)
 
-## Open your first graph
+## Install the skill on Linux or a remote Mac
+
+Paste this prompt into the **agent chat on the machine where you want the skill installed**. On a Linux server, that can be the agent running in your SSH session.
+
+```text
+Install Concept Graph for the agent I'm using on this machine. On Linux, set
+it up to create .conceptgraph files here, including over SSH. I'll use the
+viewer on my Mac. Use the latest stable release from
+https://github.com/briansynthetaic/agent-concept-graph.git
+Reuse a matching checkout or clone it into ~/.local/share/agent-concept-graph.
+
+From the checkout, run `make install AGENT=codex` for Codex or
+`make install AGENT=claude` for Claude Code. For another agent, pass its user
+skills directory as SKILLS_DIR. On Linux this builds the headless CLI for
+`save` and `validate`. If the Swift 5.9+ compiler or Perl is missing, run
+`make install-skill` with the same arguments so I can still write graph JSON.
+If Make is missing, link the checkout's skill/ directory as concept-graph
+in the agent's user skills directory.
+
+Set `skill` to the absolute path of the installed link and check that
+"$skill/SKILL.md" is readable. If the CLI was built, validate the bundled graph with
+"$skill/scripts/concept-graph" validate "$skill/examples/report-delivery.json"
+Tell me the installed path and whether CLI validation passed or was skipped.
+```
+
+## Open your first graph on your Mac
 
 You'll need macOS 14 or later, Homebrew, and the Xcode Command Line Tools. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
 
@@ -31,15 +56,9 @@ Start a fresh agent session if the skill was installed while your chat was open.
 
 ## Run the agent on Linux and view the graph on your Mac
 
-Connect from your Mac as usual, for example with `ssh devbox`. In the Linux
-session, run `make install AGENT=codex` from this source checkout
-(or `make install AGENT=claude`). The Linux source build uses Make, Perl and
-Swift 5.9 or later. If the machine has no Swift toolchain, use
-`make install-skill AGENT=codex` to link just the skill. The agent can then
-write the JSON directly for validation on your Mac. Open the resulting
-document with the Homebrew viewer or a source build.
-
-Start the agent in your project directory on Linux and ask it to save the graph.
+After installing the skill with the prompt above, start your agent in the
+project directory on Linux and ask it to save a graph. A skill-only install
+can write the graph JSON directly for validation on your Mac.
 
 > Map the report delivery flow and save it as `./delivery.conceptgraph` in this repository.
 
