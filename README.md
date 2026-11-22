@@ -128,7 +128,7 @@ Reopen a document with **File → Open…** (⌘O), **Open Recent**, or by openi
 | Explore a neighborhood | Double-click a bubble or press Return on the canvas. Use arrow keys to visit the concept and its neighbors. Escape restores the previous camera. |
 | Ask about several concepts | Shift-click bubbles or use Shift–arrow on the canvas. Press ⇧⌘P, choose whether to include neighbors, and review the prompt. |
 | Find a concept | Press ⌘F, type a term, then press Return to step through matches. |
-| Move around | Drag the background to pan. Pinch to zoom. Press ⌘0 to fit the graph. |
+| Move around | Scroll up to zoom in or down to zoom out at the pointer. You can also pinch to zoom. Drag the background to pan, or press ⌘0 to fit the graph. |
 | Release a bubble | Right-click a pin and choose **Unpin**. **View → Reset Layout** releases all pins and recomputes positions. Use ⌘Z to undo it. |
 | Adjust the drawing | Under **View**, choose when relationship labels appear and whether to show group regions. |
 | Change shapes or motion | In **Concept Graph → Settings…** (⌘,), choose circles or rounded rectangles. Motion follows the system preference by default. |

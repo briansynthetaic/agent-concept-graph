@@ -57,6 +57,15 @@ private struct Scene {
         default: preconditionFailure("Unexpected mouse event")
         }
     }
+
+    func scroll(_ unit: CGScrollEventUnit, dy: Int32, dx: Int32 = 0, at point: CGPoint) {
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: unit, wheelCount: 2,
+                            wheel1: dy, wheel2: dx, wheel3: 0)!
+        event.flags = []
+        // A windowless NSEvent uses screen coordinates. Deliver it only to the test canvas.
+        event.location = CGPoint(x: point.x, y: NSScreen.screens[0].frame.maxY - point.y)
+        canvas.scrollWheel(with: NSEvent(cgEvent: event)!)
+    }
 }
 
 @main
@@ -76,6 +85,20 @@ enum CanvasChecks {
         defer { if let url = try? Arrangement.url(for: target.path) { try? FileManager.default.removeItem(at: url) } }
 
         let scene = Scene(), canvas = scene.canvas
+        scene.load(graph)
+        let pointer = scene.location(of: "worker")
+        let startScale = canvas.arrangement.scale
+        for unit in [CGScrollEventUnit.line, .pixel] {
+            scene.scroll(unit, dy: 3, at: pointer)
+            check(canvas.arrangement.scale > startScale)
+            let afterZoom = scene.location(of: "worker")
+            check(hypot(afterZoom.x - pointer.x, afterZoom.y - pointer.y) < 1e-8)
+            scene.scroll(unit, dy: -3, at: pointer)
+            check(abs(canvas.arrangement.scale - startScale) < 1e-8)
+        }
+        scene.scroll(.pixel, dy: 0, dx: 12, at: pointer)
+        let afterPan = scene.location(of: "worker")
+        check(abs(afterPan.x - pointer.x - 12) < 1e-8 && abs(afterPan.y - pointer.y) < 1e-8)
         for shape in NodeShape.allCases {
             canvas.shape = shape
             scene.load(graph)

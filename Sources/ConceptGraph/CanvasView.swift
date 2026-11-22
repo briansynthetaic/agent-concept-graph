@@ -119,7 +119,7 @@ final class CanvasView: NSView {
     private var simulationDebt = 0.0
 
     private var zoomLabel: (percent: Int, block: TextBlock)?
-    private lazy var hint = TextBlock.make("Pinch or ⌘-scroll to zoom   ·   Drag to pan   ·   Click a bubble to inspect it",
+    private lazy var hint = TextBlock.make("Scroll or pinch to zoom   ·   Drag to pan   ·   Click a bubble to inspect it",
                                            font: .systemFont(ofSize: 11.5), maxWidth: 2000, maxLines: 1)
 
     var selectedID: String? { selected.map { nodes[$0].model.id } }
@@ -828,18 +828,16 @@ final class CanvasView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         noteInteraction()
-        let location = convert(event.locationInWindow, from: nil)
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
         let precise = event.hasPreciseScrollingDeltas
-        if !precise || event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
-            // A mouse wheel zooms; so does a trackpad scroll with ⌘ or ⌥ held.
-            let amount = precise ? event.scrollingDeltaY * 0.01 : max(-8, min(8, event.scrollingDeltaY)) * 0.06
-            zoom(by: exp(amount), around: location)
-        } else {
+        if precise, abs(dx) > abs(dy), event.modifierFlags.isDisjoint(with: [.command, .option]) {
             cameraAnimation = nil
             userMovedCamera = true
-            offset.x += event.scrollingDeltaX
-            offset.y += event.scrollingDeltaY
+            offset.x += dx
             needsDisplay = true
+        } else if dy != 0 {
+            let amount = precise ? dy * 0.01 : max(-8, min(8, dy)) * 0.06
+            zoom(by: exp(amount), around: convert(event.locationInWindow, from: nil))
         }
     }
 
