@@ -33,13 +33,20 @@ Tell me the installed path and whether CLI validation passed or was skipped.
 
 You'll need macOS 14 or later, Homebrew, and the Xcode Command Line Tools. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
 
-**In Terminal**, install the viewer and its bundled skill.
+**Once per Mac**, add the tap and trust the Concept Graph formula in Terminal.
 
 ```sh
-brew install briansynthetaic/tap/concept-graph
+brew tap briansynthetaic/tap
+brew trust --formula briansynthetaic/tap/concept-graph
 ```
 
-Run the link command for each agent you use.
+Use this command for the first install and future updates. It installs the viewer and its bundled skill.
+
+```sh
+brew install concept-graph
+```
+
+After the first install, link the skill once for each agent you use.
 
 | Agent | Terminal command |
 |---|---|
@@ -136,7 +143,7 @@ The inspector includes a text outline for VoiceOver. The canvas announces the se
 
 ## Update or uninstall
 
-For Homebrew, run `brew upgrade concept-graph` and reopen your graph windows. Before uninstalling, run `concept-graph unlink claude`, `concept-graph unlink codex`, or `concept-graph unlink --dir "/path/to/skills"` for each agent you linked. Then run `brew uninstall concept-graph`.
+For Homebrew, run `brew install concept-graph` and reopen your graph windows. Before uninstalling, run `concept-graph unlink claude`, `concept-graph unlink codex`, or `concept-graph unlink --dir "/path/to/skills"` for each agent you linked. Then run `brew uninstall concept-graph`.
 
 For a source installation, run `git pull --ff-only && make` in the original checkout, then reopen graph windows. Use `make uninstall` for Claude Code, `make uninstall AGENT=codex` for Codex, or the original `SKILLS_DIR` for a custom agent. When switching installations, unlink the old one first.
 
