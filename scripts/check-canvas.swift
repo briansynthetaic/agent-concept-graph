@@ -70,6 +70,21 @@ private struct Scene {
 
 @main
 enum CanvasChecks {
+    private static func checkGroupSpring() {
+        let layout = ForceLayout()
+        layout.nodes = [0.0, 100.0, 350.0].map { .init(x: 0, y: $0, radius: 36, group: 0) }
+        layout.beginLocalDrag(0)
+        layout.moveDraggedNode(0, x: 400, y: 0)
+        let near = layout.nodes[1].x, far = layout.nodes[2].x
+        check(far < near && near < 400)
+        for _ in 0..<90 {
+            layout.tick()
+            check(abs(layout.nodes[1].x - 400) <= 10.001)
+            check(abs(layout.nodes[2].x - 400) <= 18.001)
+        }
+        check(abs(layout.nodes[1].x - 400) < 0.05 && abs(layout.nodes[2].x - 400) < 0.05)
+    }
+
     private static func checkBubbleDragging(_ original: ConceptGraph) {
         let scene = Scene(), canvas = scene.canvas
         var graph = original
@@ -98,10 +113,13 @@ enum CanvasChecks {
             func checkGroupOffset() {
                 let places = canvas.arrangement.places
                 let anchor = places["worker"]!.point, member = places["planner"]!.point
-                check(hypot(member.x - anchor.x - 220, member.y - anchor.y - 20) <= 4.000001)
+                check(hypot(member.x - anchor.x - 220, member.y - anchor.y - 20) <= 15)
                 check(places["planner"]!.pinned)
             }
-            if !wholeGraph { checkGroupOffset() }
+            if !wholeGraph {
+                checkGroupOffset()
+                check(canvas.arrangement.places["planner"]!.point.x < initial.places["planner"]!.point.x + 395)
+            }
             canvas.advanceFrame(at: now + 0.05)
             let following = canvas.arrangement
             if !wholeGraph {
@@ -141,6 +159,7 @@ enum CanvasChecks {
         let file = try GraphFile(source.path), graph = file.result.graph!
         defer { if let url = try? Arrangement.url(for: target.path) { try? FileManager.default.removeItem(at: url) } }
 
+        checkGroupSpring()
         checkBubbleDragging(graph)
         let scene = Scene(), canvas = scene.canvas
         scene.load(graph)

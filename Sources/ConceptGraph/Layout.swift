@@ -57,9 +57,17 @@ final class ForceLayout {
     private let cohesion = 0.16
     private let territoryPadding = 26.0
 
+    private struct Follower {
+        var index: Int
+        var dx: Double
+        var dy: Double
+        // More distant members have a little more room to sway.
+        var travel: Double { min(18, 6 + hypot(dx, dy) * 0.04) }
+    }
+
     private struct LocalDrag {
         var anchor: Int
-        var followers: [(index: Int, dx: Double, dy: Double)]
+        var followers: [Follower]
         var members: Set<Int>
     }
     private var localDrag: LocalDrag?
@@ -69,28 +77,25 @@ final class ForceLayout {
     func beginLocalDrag(_ anchor: Int) {
         stop()
         let origin = nodes[anchor]
-        var followers: [(Int, Double, Double)] = []
+        var followers: [Follower] = []
         for i in nodes.indices {
             nodes[i].vx = 0
             nodes[i].vy = 0
             if origin.group >= 0, nodes[i].group == origin.group, i != anchor {
-                followers.append((i, nodes[i].x - origin.x, nodes[i].y - origin.y))
+                followers.append(Follower(index: i, dx: nodes[i].x - origin.x, dy: nodes[i].y - origin.y))
             }
         }
-        localDrag = LocalDrag(anchor: anchor, followers: followers, members: Set([anchor] + followers.map { $0.0 }))
+        localDrag = LocalDrag(anchor: anchor, followers: followers, members: Set([anchor] + followers.map { $0.index }))
     }
 
     func moveDraggedNode(_ index: Int, x: Double, y: Double) {
         nodes[index].pinned = true
         if let drag = localDrag {
             let dx = x - nodes[index].x, dy = y - nodes[index].y
-            // Allow at most four graph units of trailing motion, shared by every follower.
-            let length = hypot(dx, dy)
-            let lag = length > 0 ? min(0.12, 4 / length) : 0
             moveLocally(index, x: x, y: y, members: drag.members)
             for follower in drag.followers {
-                moveLocally(follower.index, x: x + follower.dx - dx * lag,
-                            y: y + follower.dy - dy * lag, members: drag.members)
+                let node = nodes[follower.index]
+                placeFollower(follower, x: node.x + dx * 0.75, y: node.y + dy * 0.75, drag: drag)
             }
         } else {
             nodes[index].x = x
@@ -99,7 +104,23 @@ final class ForceLayout {
         }
     }
 
+    /// Limit how far a member can stray from its original offset, even during a fast reversal.
+    private func placeFollower(_ follower: Follower, x: Double, y: Double, drag: LocalDrag) {
+        let anchor = nodes[drag.anchor]
+        let targetX = anchor.x + follower.dx, targetY = anchor.y + follower.dy
+        let ex = x - targetX, ey = y - targetY
+        let distance = hypot(ex, ey)
+        let fraction = distance > follower.travel ? follower.travel / distance : 1
+        moveLocally(follower.index, x: targetX + ex * fraction, y: targetY + ey * fraction, members: drag.members)
+    }
+
     func endDrag() {
+        if localDrag != nil {
+            for i in nodes.indices {
+                nodes[i].vx = 0
+                nodes[i].vy = 0
+            }
+        }
         localDrag = nil
         alphaTarget = 0
     }
@@ -193,11 +214,14 @@ final class ForceLayout {
             let anchor = nodes[drag.anchor]
             for follower in drag.followers {
                 let node = nodes[follower.index]
-                let dx = (anchor.x + follower.dx - node.x) * 0.12
-                let dy = (anchor.y + follower.dy - node.y) * 0.12
-                if hypot(dx, dy) > 0.001 {
-                    moveLocally(follower.index, x: node.x + dx, y: node.y + dy, members: drag.members)
+                let stiffness = 1 / follower.travel
+                let vx = node.vx * 0.68 + (anchor.x + follower.dx - node.x) * stiffness
+                let vy = node.vy * 0.68 + (anchor.y + follower.dy - node.y) * stiffness
+                if hypot(vx, vy) > 0.001 {
+                    placeFollower(follower, x: node.x + vx, y: node.y + vy, drag: drag)
                 }
+                nodes[follower.index].vx = nodes[follower.index].x - node.x
+                nodes[follower.index].vy = nodes[follower.index].y - node.y
             }
             return
         }
