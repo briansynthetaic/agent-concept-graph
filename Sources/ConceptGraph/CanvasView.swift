@@ -8,6 +8,7 @@ import QuartzCore
 /// points with `view = graph * scale + offset`. The view is flipped (y grows down).
 final class CanvasView: NSView {
 
+    var wholeGraphDrag = ViewerPreferences.defaults.bool(forKey: "wholeGraphDrag")
     var shape = NodeShape(rawValue: ViewerPreferences.defaults.integer(forKey: "nodeShape")) ?? .circle
     var reduceMotion: Bool {
         ViewerPreferences.defaults.bool(forKey: "reduceMotion") || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -254,7 +255,7 @@ final class CanvasView: NSView {
         hovered = nil
         // An update can arrive mid-drag; node indices may no longer mean what they did.
         drag = .none
-        layout.alphaTarget = 0
+        layout.endDrag()
         recomputeMatches()
 
         if isFirst {
@@ -792,11 +793,10 @@ final class CanvasView: NSView {
         case let .node(index, grab, start, moved):
             guard moved || hypot(location.x - start.x, location.y - start.y) > 3 else { return }
             let p = graphPoint(location)
-            layout.nodes[index].x = p.x - grab.x
-            layout.nodes[index].y = p.y - grab.y
-            layout.nodes[index].pinned = true
-            // The rest of the graph makes room while the bubble is being carried.
-            layout.alphaTarget = 0.25
+            if !moved, !wholeGraphDrag { layout.beginLocalDrag(index) }
+            cameraAnimation = nil
+            layout.moveDraggedNode(index, x: p.x - grab.x, y: p.y - grab.y)
+            needsDisplay = true
             userMovedCamera = true
             drag = .node(index: index, grab: grab, start: start, moved: true)
             startAnimating()
@@ -812,7 +812,7 @@ final class CanvasView: NSView {
             if !moved { select(index: nil) }
         case let .node(index, _, _, moved):
             if moved {
-                layout.alphaTarget = 0
+                layout.endDrag()
             } else if event.modifierFlags.contains(.shift) {
                 toggleSelection(index)
             } else if event.clickCount >= 2 {

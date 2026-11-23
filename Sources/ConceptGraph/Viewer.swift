@@ -313,8 +313,12 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let motion = NSPopUpButton()
         motion.addItems(withTitles: ["Follow System", "Reduce Motion"])
         motion.selectItem(at: ViewerPreferences.defaults.bool(forKey: "reduceMotion") ? 1 : 0)
+        let dragging = NSPopUpButton()
+        dragging.addItems(withTitles: ["Move Group and Freeze on Drop", "Move Whole Graph"])
+        dragging.selectItem(at: canvas.wholeGraphDrag ? 1 : 0)
         let stack = NSStackView(views: [NSTextField(labelWithString: "Node shape"), shape, preview,
-                                        NSTextField(labelWithString: "Motion"), motion])
+                                        NSTextField(labelWithString: "Motion"), motion,
+                                        NSTextField(labelWithString: "Bubble dragging"), dragging])
         stack.orientation = .vertical
         stack.alignment = .leading
         preview.heightAnchor.constraint(equalToConstant: 80).isActive = true
@@ -324,6 +328,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         sheet.addButton(withTitle: "Apply")
         sheet.addButton(withTitle: "Cancel")
         guard sheet.runModal() == .alertFirstButtonReturn else { return }
+        ViewerPreferences.defaults.set(dragging.indexOfSelectedItem == 1, forKey: "wholeGraphDrag")
         ViewerPreferences.defaults.set(shape.indexOfSelectedItem, forKey: "nodeShape")
         ViewerPreferences.defaults.set(motion.indexOfSelectedItem == 1, forKey: "reduceMotion")
         ViewerPreferences.defaults.synchronize()
@@ -334,6 +339,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc private func applyPreferences() {
         ViewerPreferences.defaults.synchronize()
         let shape = NodeShape(rawValue: ViewerPreferences.defaults.integer(forKey: "nodeShape")) ?? .circle
+        canvas.wholeGraphDrag = ViewerPreferences.defaults.bool(forKey: "wholeGraphDrag")
         if canvas.shape != shape {
             canvas.shape = shape
             canvas.setGraph(graph)

@@ -114,7 +114,7 @@ check it with `"$CG" validate ./delivery.conceptgraph`.
 
 Choose **File → Save As…** (⇧⌘S) to keep a scratch graph as a named `.conceptgraph` or `.json` file. The copy opens in its own window with its own prompt path. Your original window continues to follow the original file. If the agent's latest edit is invalid or the file has disappeared, **Save Last Valid Revision** saves the revision you can still read.
 
-Drag a bubble to pin it. Concept Graph keeps positions, camera and selection in your Mac user's Application Support folder, keyed to the graph's path. Agent edits preserve surviving IDs. Save As copies the arrangement. A colleague who receives just the JSON gets a fresh layout.
+Drag a bubble to pin it. While you hold it, unpinned members of its group follow and bubbles in the way get pushed aside. Release to freeze the arrangement immediately. To let the whole graph respond to a drag, choose **Move Whole Graph** under **Settings… → Bubble dragging**. Concept Graph keeps positions, camera and selection in your Mac user's Application Support folder, keyed to the graph's path. Agent edits preserve surviving IDs. Save As copies the arrangement. A colleague who receives just the JSON gets a fresh layout.
 
 Reopen a document with **File → Open…** (⌘O), **Open Recent**, or by opening a `.conceptgraph` file in Finder. Linking a Homebrew installation registers the bundled viewer with Finder. If Finder asks for an application, choose the built **ConceptGraph.app**. Both the open panel and CLI also accept ordinary graph JSON.
 

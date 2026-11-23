@@ -41,7 +41,7 @@ final class ForceLayout {
 
     private(set) var alpha = 1.0
     /// Raised while the user drags a bubble so the rest of the graph keeps responding.
-    var alphaTarget = 0.0
+    private var alphaTarget = 0.0
     private let alphaMin = 0.001
     private let alphaDecay = 1 - pow(0.001, 1.0 / 300.0)
     private let velocityDecay = 0.6
@@ -57,7 +57,86 @@ final class ForceLayout {
     private let cohesion = 0.16
     private let territoryPadding = 26.0
 
-    var isActive: Bool { alpha >= alphaMin || alphaTarget > 0 }
+    private struct LocalDrag {
+        var anchor: Int
+        var followers: [(index: Int, dx: Double, dy: Double)]
+    }
+    private var localDrag: LocalDrag?
+
+    var isActive: Bool { localDrag != nil || alpha >= alphaMin || alphaTarget > 0 }
+
+    func beginLocalDrag(_ anchor: Int) {
+        stop()
+        let origin = nodes[anchor]
+        var followers: [(Int, Double, Double)] = []
+        for i in nodes.indices {
+            nodes[i].vx = 0
+            nodes[i].vy = 0
+            if origin.group >= 0, nodes[i].group == origin.group, i != anchor, !nodes[i].pinned {
+                followers.append((i, nodes[i].x - origin.x, nodes[i].y - origin.y))
+            }
+        }
+        localDrag = LocalDrag(anchor: anchor, followers: followers)
+    }
+
+    func moveDraggedNode(_ index: Int, x: Double, y: Double) {
+        nodes[index].pinned = true
+        if localDrag != nil {
+            moveLocally(index, x: x, y: y)
+        } else {
+            nodes[index].x = x
+            nodes[index].y = y
+            alphaTarget = 0.25
+        }
+    }
+
+    func endDrag() {
+        localDrag = nil
+        alphaTarget = 0
+    }
+
+    /// Sweep each moving outline along its path so a fast pointer can still shove
+    /// a bubble between events. Only actual contacts propagate the displacement.
+    private func moveLocally(_ index: Int, x: Double, y: Double) {
+        var moves = [(index, x, y)]
+        var visited: Set<Int> = [index]
+        var next = 0
+        while next < moves.count {
+            let (i, endX, endY) = moves[next]
+            next += 1
+            let start = nodes[i]
+            let dx = endX - start.x, dy = endY - start.y
+            let length = hypot(dx, dy)
+            guard length > 0.001 else { continue }
+            nodes[i].x = endX
+            nodes[i].y = endY
+            let ux = dx / length, uy = dy / length
+            for j in nodes.indices where !nodes[j].pinned && !visited.contains(j) {
+                let other = nodes[j]
+                let forward = (other.x - start.x) * ux + (other.y - start.y) * uy
+                guard forward >= 0 else { continue }
+                let along = min(forward, length)
+                var nx = other.x - (start.x + along * ux)
+                var ny = other.y - (start.y + along * uy)
+                let distance = hypot(nx, ny)
+                if distance > 0.001 {
+                    nx /= distance
+                    ny /= distance
+                } else if forward >= length {
+                    nx = ux
+                    ny = uy
+                } else {
+                    nx = -uy
+                    ny = ux
+                }
+                let reach = shape.geometry(start.radius + other.radius).reach(dx: nx, dy: ny)
+                let overlap = reach + collisionPadding - distance
+                guard overlap > 0.001 else { continue }
+                visited.insert(j)
+                moves.append((j, other.x + nx * overlap, other.y + ny * overlap))
+            }
+        }
+    }
 
     func setLinks(_ links: [Link]) {
         var degree = [Int](repeating: 0, count: nodes.count)
@@ -84,6 +163,7 @@ final class ForceLayout {
 
     /// A complete restored arrangement stays exactly where the user left it.
     func stop() {
+        localDrag = nil
         alpha = 0
         alphaTarget = 0
     }
@@ -100,6 +180,18 @@ final class ForceLayout {
     }
 
     func tick() {
+        if let drag = localDrag {
+            let anchor = nodes[drag.anchor]
+            for follower in drag.followers {
+                let node = nodes[follower.index]
+                let dx = (anchor.x + follower.dx - node.x) * 0.12
+                let dy = (anchor.y + follower.dy - node.y) * 0.12
+                if hypot(dx, dy) > 0.001 {
+                    moveLocally(follower.index, x: node.x + dx, y: node.y + dy)
+                }
+            }
+            return
+        }
         alpha += (alphaTarget - alpha) * alphaDecay
         let count = nodes.count
         guard count > 0 else { return }
@@ -189,7 +281,7 @@ final class ForceLayout {
                         let distance = (dx * dx + dy * dy).squareRoot()
                         let overlap = reach[g] + reach[h] + territoryPadding - distance
                         guard overlap > 0 else { continue }
-                        let push = overlap / distance * 0.12
+                        let push = min(overlap, baseGap) / distance * 0.12 * alpha
                         let shareG = size[h] / (size[g] + size[h])
                         groupDX[g] -= dx * push * shareG
                         groupDY[g] -= dy * push * shareG
@@ -210,8 +302,8 @@ final class ForceLayout {
                         let distance = (dx * dx + dy * dy).squareRoot()
                         let overlap = reach[g] + n[i].radius * enclosingFactor + territoryPadding - distance
                         guard overlap > 0 else { continue }
-                        n[i].vx += dx / distance * overlap * 0.12
-                        n[i].vy += dy / distance * overlap * 0.12
+                        n[i].vx += dx / distance * min(overlap, baseGap) * 0.12 * alpha
+                        n[i].vy += dy / distance * min(overlap, baseGap) * 0.12 * alpha
                     }
                 }
             }

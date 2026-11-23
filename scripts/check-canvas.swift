@@ -70,6 +70,52 @@ private struct Scene {
 
 @main
 enum CanvasChecks {
+    private static func checkBubbleDragging(_ original: ConceptGraph) {
+        let scene = Scene(), canvas = scene.canvas
+        var graph = original
+        graph.groups = [.init(id: "team", label: "Team", color: nil)]
+        for i in graph.nodes.indices where ["worker", "planner"].contains(graph.nodes[i].id) {
+            graph.nodes[i].group = "team"
+        }
+        scene.load(graph)
+        var initial = canvas.arrangement
+        initial.center = .zero
+        initial.scale = 1
+        initial.places["worker"]!.point = CGPoint(x: -300, y: -180)
+        initial.places["planner"]!.point = CGPoint(x: -300, y: 100)
+        initial.places["runs"]!.point = CGPoint(x: -100, y: -190)
+        initial.places["schedule"]!.point = CGPoint(x: 320, y: 250)
+        var now = CACurrentMediaTime()
+        for wholeGraph in [false, true] {
+            now += 2
+            canvas.wholeGraphDrag = wholeGraph
+            canvas.restore(initial)
+            let start = scene.location(of: "worker")
+            let end = CGPoint(x: start.x + 400, y: start.y)
+            scene.mouse(.leftMouseDown, at: start)
+            scene.mouse(.leftMouseDragged, at: end)
+            canvas.advanceFrame(at: now + 0.05)
+            let following = canvas.arrangement
+            if !wholeGraph {
+                check(following.places["runs"]!.point != initial.places["runs"]!.point)
+                check(following.places["schedule"]!.point == initial.places["schedule"]!.point)
+                check(following.places["planner"]!.point.x > initial.places["planner"]!.point.x)
+                canvas.advanceFrame(at: now + 0.10)
+                check(canvas.arrangement.places["planner"]!.point.x > following.places["planner"]!.point.x)
+            }
+            scene.mouse(.leftMouseUp, at: end)
+            let dropped = canvas.arrangement
+            for i in 1...60 { canvas.advanceFrame(at: now + 0.10 + Double(i) / 60) }
+            if wholeGraph {
+                check(canvas.arrangement.places["schedule"]!.point != dropped.places["schedule"]!.point)
+            } else {
+                for (id, place) in dropped.places {
+                    check(canvas.arrangement.places[id]!.point == place.point)
+                }
+            }
+        }
+    }
+
     static func main() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let args = CommandLine.arguments
@@ -84,6 +130,7 @@ enum CanvasChecks {
         let file = try GraphFile(source.path), graph = file.result.graph!
         defer { if let url = try? Arrangement.url(for: target.path) { try? FileManager.default.removeItem(at: url) } }
 
+        checkBubbleDragging(graph)
         let scene = Scene(), canvas = scene.canvas
         scene.load(graph)
         let pointer = scene.location(of: "worker")
