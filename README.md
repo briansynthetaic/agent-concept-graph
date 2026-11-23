@@ -174,3 +174,7 @@ cp skill/examples/report-delivery.json "$work/delivery.json"
 Run `make check` on Linux or macOS to test saving and validating portable documents. On macOS it also checks offscreen rendering, documents, prompts and viewer commands. Run `make check-build` on a Mac to exercise concurrent first builds and a failed rebuild in a disposable checkout. On a logged-in Mac, `make check-windows` exercises the window lifecycle and Finder opening with a temporary document. `make benchmark` times the first offscreen frame, revision processing, and simulated drag frames on sparse and denser maps.
 
 See the [delivery system](skill/examples/report-delivery.json), [Git walkthrough](skill/examples/git-internals.json), [conversation map](skill/examples/conversation.json), [agent skill](skill/SKILL.md), and [graph format](skill/references/format.md).
+
+## License
+
+Concept Graph is free to use, change and share under the [Apache License 2.0 with the Commons Clause](LICENSE). The Commons Clause withholds the right to sell it: you may not charge for Concept Graph itself, or for a product or service whose value comes substantially from it. RAIC Labs and Brian Goodwin hold the copyright and reserve all commercial rights.
