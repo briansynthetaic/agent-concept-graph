@@ -60,6 +60,7 @@ final class ForceLayout {
     private struct LocalDrag {
         var anchor: Int
         var followers: [(index: Int, dx: Double, dy: Double)]
+        var members: Set<Int>
     }
     private var localDrag: LocalDrag?
 
@@ -72,17 +73,25 @@ final class ForceLayout {
         for i in nodes.indices {
             nodes[i].vx = 0
             nodes[i].vy = 0
-            if origin.group >= 0, nodes[i].group == origin.group, i != anchor, !nodes[i].pinned {
+            if origin.group >= 0, nodes[i].group == origin.group, i != anchor {
                 followers.append((i, nodes[i].x - origin.x, nodes[i].y - origin.y))
             }
         }
-        localDrag = LocalDrag(anchor: anchor, followers: followers)
+        localDrag = LocalDrag(anchor: anchor, followers: followers, members: Set([anchor] + followers.map { $0.0 }))
     }
 
     func moveDraggedNode(_ index: Int, x: Double, y: Double) {
         nodes[index].pinned = true
-        if localDrag != nil {
-            moveLocally(index, x: x, y: y)
+        if let drag = localDrag {
+            let dx = x - nodes[index].x, dy = y - nodes[index].y
+            // Allow at most four graph units of trailing motion, shared by every follower.
+            let length = hypot(dx, dy)
+            let lag = length > 0 ? min(0.12, 4 / length) : 0
+            moveLocally(index, x: x, y: y, members: drag.members)
+            for follower in drag.followers {
+                moveLocally(follower.index, x: x + follower.dx - dx * lag,
+                            y: y + follower.dy - dy * lag, members: drag.members)
+            }
         } else {
             nodes[index].x = x
             nodes[index].y = y
@@ -97,7 +106,7 @@ final class ForceLayout {
 
     /// Sweep each moving outline along its path so a fast pointer can still shove
     /// a bubble between events. Only actual contacts propagate the displacement.
-    private func moveLocally(_ index: Int, x: Double, y: Double) {
+    private func moveLocally(_ index: Int, x: Double, y: Double, members: Set<Int>) {
         var moves = [(index, x, y)]
         var visited: Set<Int> = [index]
         var next = 0
@@ -111,7 +120,7 @@ final class ForceLayout {
             nodes[i].x = endX
             nodes[i].y = endY
             let ux = dx / length, uy = dy / length
-            for j in nodes.indices where !nodes[j].pinned && !visited.contains(j) {
+            for j in nodes.indices where !members.contains(j) && !nodes[j].pinned && !visited.contains(j) {
                 let other = nodes[j]
                 let forward = (other.x - start.x) * ux + (other.y - start.y) * uy
                 guard forward >= 0 else { continue }
@@ -187,7 +196,7 @@ final class ForceLayout {
                 let dx = (anchor.x + follower.dx - node.x) * 0.12
                 let dy = (anchor.y + follower.dy - node.y) * 0.12
                 if hypot(dx, dy) > 0.001 {
-                    moveLocally(follower.index, x: node.x + dx, y: node.y + dy)
+                    moveLocally(follower.index, x: node.x + dx, y: node.y + dy, members: drag.members)
                 }
             }
             return

@@ -82,8 +82,9 @@ enum CanvasChecks {
         initial.center = .zero
         initial.scale = 1
         initial.places["worker"]!.point = CGPoint(x: -300, y: -180)
-        initial.places["planner"]!.point = CGPoint(x: -300, y: 100)
-        initial.places["runs"]!.point = CGPoint(x: -100, y: -190)
+        initial.places["planner"]!.point = CGPoint(x: -80, y: -160)
+        initial.places["planner"]!.pinned = true
+        initial.places["runs"]!.point = CGPoint(x: 80, y: -190)
         initial.places["schedule"]!.point = CGPoint(x: 320, y: 250)
         var now = CACurrentMediaTime()
         for wholeGraph in [false, true] {
@@ -91,9 +92,16 @@ enum CanvasChecks {
             canvas.wholeGraphDrag = wholeGraph
             canvas.restore(initial)
             let start = scene.location(of: "worker")
-            let end = CGPoint(x: start.x + 400, y: start.y)
+            var end = CGPoint(x: start.x + 400, y: start.y)
             scene.mouse(.leftMouseDown, at: start)
             scene.mouse(.leftMouseDragged, at: end)
+            func checkGroupOffset() {
+                let places = canvas.arrangement.places
+                let anchor = places["worker"]!.point, member = places["planner"]!.point
+                check(hypot(member.x - anchor.x - 220, member.y - anchor.y - 20) <= 4.000001)
+                check(places["planner"]!.pinned)
+            }
+            if !wholeGraph { checkGroupOffset() }
             canvas.advanceFrame(at: now + 0.05)
             let following = canvas.arrangement
             if !wholeGraph {
@@ -102,6 +110,9 @@ enum CanvasChecks {
                 check(following.places["planner"]!.point.x > initial.places["planner"]!.point.x)
                 canvas.advanceFrame(at: now + 0.10)
                 check(canvas.arrangement.places["planner"]!.point.x > following.places["planner"]!.point.x)
+                end = CGPoint(x: start.x + 60, y: start.y + 80)
+                scene.mouse(.leftMouseDragged, at: end)
+                checkGroupOffset()
             }
             scene.mouse(.leftMouseUp, at: end)
             let dropped = canvas.arrangement
