@@ -955,17 +955,9 @@ final class CanvasView: NSView {
     /// The outline that wraps every bubble of a group.
     private func hull(of group: Group, now: CFTimeInterval) -> Hull? {
         guard !group.members.isEmpty else { return nil }
-        var points: [CGPoint] = []
-        points.reserveCapacity(group.members.count * 28)
-        for member in group.members {
-            let c = position(member), geometry = shape.geometry(nodes[member].radius * pop(member, now))
-            for k in 0..<28 {
-                let angle = CGFloat(k) / 28 * 2 * .pi
-                let reach = geometry.reach(dx: cos(angle), dy: sin(angle)) + 22
-                points.append(CGPoint(x: c.x + reach * cos(angle), y: c.y + reach * sin(angle)))
-            }
-        }
-        let outline = Self.convexHull(points)
+        let outline = layout.dragOutline(for: group.members[0]) ?? GroupBoundary.outline(group.members.flatMap { member in
+            shape.geometry(nodes[member].radius * pop(member, now)).rim(at: position(member), padding: 22)
+        })
         guard outline.count > 2, let top = outline.min(by: { $0.y < $1.y }), let bottom = outline.max(by: { $0.y < $1.y }) else {
             return nil
         }
@@ -975,25 +967,6 @@ final class CanvasView: NSView {
         let middle = layout.nodes.map(\.y).reduce(0, +) / Double(max(layout.nodes.count, 1))
         let own = group.members.map { layout.nodes[$0].y }.reduce(0, +) / Double(group.members.count)
         return Hull(path: path, anchor: own > middle + 30 ? bottom : top)
-    }
-
-    private static func convexHull(_ input: [CGPoint]) -> [CGPoint] {
-        let points = input.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
-        guard points.count > 2 else { return points }
-        func cross(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
-            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-        }
-        var lower: [CGPoint] = []
-        for p in points {
-            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 { lower.removeLast() }
-            lower.append(p)
-        }
-        var upper: [CGPoint] = []
-        for p in points.reversed() {
-            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 { upper.removeLast() }
-            upper.append(p)
-        }
-        return Array(lower.dropLast() + upper.dropLast())
     }
 
     private func drawHulls(_ context: CGContext, _ paint: Paint, _ hulls: [Hull?]) {

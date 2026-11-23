@@ -70,19 +70,34 @@ private struct Scene {
 
 @main
 enum CanvasChecks {
-    private static func checkGroupSpring() {
-        let layout = ForceLayout()
-        layout.nodes = [0.0, 100.0, 350.0].map { .init(x: 0, y: $0, radius: 36, group: 0) }
-        layout.beginLocalDrag(0)
-        layout.moveDraggedNode(0, x: 400, y: 0)
-        let near = layout.nodes[1].x, far = layout.nodes[2].x
-        check(far < near && near < 400)
-        for _ in 0..<90 {
+    private static func checkElasticBoundary() {
+        for shape in NodeShape.allCases {
+            let layout = ForceLayout()
+            layout.shape = shape
+            let centers = [CGPoint.zero, CGPoint(x: -220, y: -160), CGPoint(x: 220, y: -160),
+                           CGPoint(x: -220, y: 160), CGPoint(x: 220, y: 160)]
+            layout.nodes = centers.map { .init(x: $0.x, y: $0.y, radius: 32, group: 0) }
+            layout.beginLocalDrag(0)
+            layout.moveDraggedNode(0, x: 40, y: -20)
+            for _ in 0..<30 { layout.tick() }
+            for i in 1..<centers.count {
+                check(CGPoint(x: layout.nodes[i].x, y: layout.nodes[i].y) == centers[i])
+            }
+            layout.moveDraggedNode(0, x: 430, y: 0)
+            let offset = CGPoint(x: layout.nodes[1].x - centers[1].x, y: layout.nodes[1].y - centers[1].y)
+            check(offset.x > 50 && offset.x < 430)
+            for i in 2..<centers.count {
+                check(abs(layout.nodes[i].x - centers[i].x - offset.x) < 0.001)
+                check(abs(layout.nodes[i].y - centers[i].y - offset.y) < 0.001)
+            }
+            for _ in 0..<90 { layout.tick() }
+            check(layout.nodes[1].x > centers[1].x + offset.x)
+            // Returning to the translated interior leaves the group where it was pulled.
+            let shift = CGPoint(x: layout.nodes[1].x - centers[1].x, y: layout.nodes[1].y - centers[1].y)
+            layout.moveDraggedNode(0, x: shift.x, y: shift.y)
             layout.tick()
-            check(abs(layout.nodes[1].x - 400) <= 10.001)
-            check(abs(layout.nodes[2].x - 400) <= 18.001)
+            check(abs(layout.nodes[1].x - centers[1].x - shift.x) < 0.001)
         }
-        check(abs(layout.nodes[1].x - 400) < 0.05 && abs(layout.nodes[2].x - 400) < 0.05)
     }
 
     private static func checkBubbleDragging(_ original: ConceptGraph) {
@@ -110,15 +125,9 @@ enum CanvasChecks {
             var end = CGPoint(x: start.x + 400, y: start.y)
             scene.mouse(.leftMouseDown, at: start)
             scene.mouse(.leftMouseDragged, at: end)
-            func checkGroupOffset() {
-                let places = canvas.arrangement.places
-                let anchor = places["worker"]!.point, member = places["planner"]!.point
-                check(hypot(member.x - anchor.x - 220, member.y - anchor.y - 20) <= 15)
-                check(places["planner"]!.pinned)
-            }
             if !wholeGraph {
-                checkGroupOffset()
-                check(canvas.arrangement.places["planner"]!.point.x < initial.places["planner"]!.point.x + 395)
+                check(canvas.arrangement.places["planner"]!.pinned)
+                check(canvas.arrangement.places["planner"]!.point.x < initial.places["planner"]!.point.x + 300)
             }
             canvas.advanceFrame(at: now + 0.05)
             let following = canvas.arrangement
@@ -130,7 +139,7 @@ enum CanvasChecks {
                 check(canvas.arrangement.places["planner"]!.point.x > following.places["planner"]!.point.x)
                 end = CGPoint(x: start.x + 60, y: start.y + 80)
                 scene.mouse(.leftMouseDragged, at: end)
-                checkGroupOffset()
+                check(canvas.arrangement.places["planner"]!.pinned)
             }
             scene.mouse(.leftMouseUp, at: end)
             let dropped = canvas.arrangement
@@ -159,7 +168,7 @@ enum CanvasChecks {
         let file = try GraphFile(source.path), graph = file.result.graph!
         defer { if let url = try? Arrangement.url(for: target.path) { try? FileManager.default.removeItem(at: url) } }
 
-        checkGroupSpring()
+        checkElasticBoundary()
         checkBubbleDragging(graph)
         let scene = Scene(), canvas = scene.canvas
         scene.load(graph)

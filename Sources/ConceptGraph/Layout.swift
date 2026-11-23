@@ -57,18 +57,12 @@ final class ForceLayout {
     private let cohesion = 0.16
     private let territoryPadding = 26.0
 
-    private struct Follower {
-        var index: Int
-        var dx: Double
-        var dy: Double
-        // More distant members have a little more room to sway.
-        var travel: Double { min(18, 6 + hypot(dx, dy) * 0.04) }
-    }
-
     private struct LocalDrag {
         var anchor: Int
-        var followers: [Follower]
         var members: Set<Int>
+        var outline: [CGPoint]
+        var region: [CGPoint]
+        var translation = CGPoint.zero
     }
     private var localDrag: LocalDrag?
 
@@ -76,27 +70,32 @@ final class ForceLayout {
 
     func beginLocalDrag(_ anchor: Int) {
         stop()
-        let origin = nodes[anchor]
-        var followers: [Follower] = []
+        let group = nodes[anchor].group
+        let members = nodes.indices.filter { $0 == anchor || (group >= 0 && nodes[$0].group == group) }
         for i in nodes.indices {
             nodes[i].vx = 0
             nodes[i].vy = 0
-            if origin.group >= 0, nodes[i].group == origin.group, i != anchor {
-                followers.append(Follower(index: i, dx: nodes[i].x - origin.x, dy: nodes[i].y - origin.y))
-            }
         }
-        localDrag = LocalDrag(anchor: anchor, followers: followers, members: Set([anchor] + followers.map { $0.index }))
+        let outline = members.count > 1 ? GroupBoundary.outline(members.flatMap { i in
+            shape.geometry(nodes[i].radius).rim(at: CGPoint(x: nodes[i].x, y: nodes[i].y), padding: 22)
+        }) : []
+        let region = GroupBoundary.centerRegion(outline: outline, rim: shape.geometry(nodes[anchor].radius).rim(at: .zero))
+        localDrag = LocalDrag(anchor: anchor, members: Set(members), outline: outline, region: region)
+    }
+
+    func dragOutline(for member: Int) -> [CGPoint]? {
+        guard let drag = localDrag, drag.members.contains(member), !drag.outline.isEmpty else { return nil }
+        let resting = drag.outline.map { CGPoint(x: $0.x + drag.translation.x, y: $0.y + drag.translation.y) }
+        return GroupBoundary.outline(resting + drag.members.flatMap { i in
+            shape.geometry(nodes[i].radius).rim(at: CGPoint(x: nodes[i].x, y: nodes[i].y))
+        })
     }
 
     func moveDraggedNode(_ index: Int, x: Double, y: Double) {
         nodes[index].pinned = true
-        if let drag = localDrag {
-            let dx = x - nodes[index].x, dy = y - nodes[index].y
-            moveLocally(index, x: x, y: y, members: drag.members)
-            for follower in drag.followers {
-                let node = nodes[follower.index]
-                placeFollower(follower, x: node.x + dx * 0.75, y: node.y + dy * 0.75, drag: drag)
-            }
+        if localDrag != nil {
+            let carry = pullBoundary(toward: CGPoint(x: x, y: y), holding: false)
+            moveLocally(index, x: x, y: y, members: [], carry: carry)
         } else {
             nodes[index].x = x
             nodes[index].y = y
@@ -104,30 +103,32 @@ final class ForceLayout {
         }
     }
 
-    /// Limit how far a member can stray from its original offset, even during a fast reversal.
-    private func placeFollower(_ follower: Follower, x: Double, y: Double, drag: LocalDrag) {
-        let anchor = nodes[drag.anchor]
-        let targetX = anchor.x + follower.dx, targetY = anchor.y + follower.dy
-        let ex = x - targetX, ey = y - targetY
-        let distance = hypot(ex, ey)
-        let fraction = distance > follower.travel ? follower.travel / distance : 1
-        moveLocally(follower.index, x: targetX + ex * fraction, y: targetY + ey * fraction, members: drag.members)
+    @discardableResult
+    private func pullBoundary(toward point: CGPoint, holding: Bool) -> CGPoint {
+        guard let drag = localDrag, !drag.region.isEmpty else { return .zero }
+        let relative = CGPoint(x: point.x - drag.translation.x, y: point.y - drag.translation.y)
+        let pressure = GroupBoundary.pressure(at: relative, region: drag.region)
+        let stretch = hypot(pressure.x, pressure.y)
+        guard stretch > 0.01 else { return .zero }
+        // Let the rim give under light pressure, but carry the group even on a single fast sweep.
+        let fraction = holding ? 0.14 : max(0.35, 1 - 24 / stretch)
+        let dx = pressure.x * fraction, dy = pressure.y * fraction
+        localDrag?.translation.x += dx
+        localDrag?.translation.y += dy
+        for i in nodes.indices where drag.members.contains(i) && i != drag.anchor {
+            moveLocally(i, x: nodes[i].x + dx, y: nodes[i].y + dy, members: drag.members)
+        }
+        return CGPoint(x: dx, y: dy)
     }
 
     func endDrag() {
-        if localDrag != nil {
-            for i in nodes.indices {
-                nodes[i].vx = 0
-                nodes[i].vy = 0
-            }
-        }
         localDrag = nil
         alphaTarget = 0
     }
 
     /// Sweep each moving outline along its path so a fast pointer can still shove
     /// a bubble between events. Only actual contacts propagate the displacement.
-    private func moveLocally(_ index: Int, x: Double, y: Double, members: Set<Int>) {
+    private func moveLocally(_ index: Int, x: Double, y: Double, members: Set<Int>, carry: CGPoint = .zero) {
         var moves = [(index, x, y)]
         var visited: Set<Int> = [index]
         var next = 0
@@ -140,19 +141,25 @@ final class ForceLayout {
             guard length > 0.001 else { continue }
             nodes[i].x = endX
             nodes[i].y = endY
-            let ux = dx / length, uy = dy / length
             for j in nodes.indices where !members.contains(j) && !nodes[j].pinned && !visited.contains(j) {
                 let other = nodes[j]
-                let forward = (other.x - start.x) * ux + (other.y - start.y) * uy
+                // Groupmates have already translated with the rim. Sweep against them
+                // in that moving frame, and against outsiders along the actual pointer path.
+                let shared = i == index && carry != .zero && localDrag?.members.contains(j) == true ? carry : .zero
+                let sx = start.x + shared.x, sy = start.y + shared.y
+                let travel = shared == .zero ? length : hypot(endX - sx, endY - sy)
+                guard travel > 0.001 else { continue }
+                let ux = (endX - sx) / travel, uy = (endY - sy) / travel
+                let forward = (other.x - sx) * ux + (other.y - sy) * uy
                 guard forward >= 0 else { continue }
-                let along = min(forward, length)
-                var nx = other.x - (start.x + along * ux)
-                var ny = other.y - (start.y + along * uy)
+                let along = min(forward, travel)
+                var nx = other.x - (sx + along * ux)
+                var ny = other.y - (sy + along * uy)
                 let distance = hypot(nx, ny)
                 if distance > 0.001 {
                     nx /= distance
                     ny /= distance
-                } else if forward >= length {
+                } else if forward >= travel {
                     nx = ux
                     ny = uy
                 } else {
@@ -212,17 +219,7 @@ final class ForceLayout {
     func tick() {
         if let drag = localDrag {
             let anchor = nodes[drag.anchor]
-            for follower in drag.followers {
-                let node = nodes[follower.index]
-                let stiffness = 1 / follower.travel
-                let vx = node.vx * 0.68 + (anchor.x + follower.dx - node.x) * stiffness
-                let vy = node.vy * 0.68 + (anchor.y + follower.dy - node.y) * stiffness
-                if hypot(vx, vy) > 0.001 {
-                    placeFollower(follower, x: node.x + vx, y: node.y + vy, drag: drag)
-                }
-                nodes[follower.index].vx = nodes[follower.index].x - node.x
-                nodes[follower.index].vy = nodes[follower.index].y - node.y
-            }
+            pullBoundary(toward: CGPoint(x: anchor.x, y: anchor.y), holding: true)
             return
         }
         alpha += (alphaTarget - alpha) * alphaDecay
