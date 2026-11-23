@@ -33,11 +33,10 @@ Tell me the installed path and whether CLI validation passed or was skipped.
 
 You'll need macOS 14 or later, Homebrew, and the Xcode Command Line Tools. If you need the tools, run `xcode-select --install` in Terminal and let the installer finish.
 
-**In Terminal**, tap the repository and install the viewer.
+**In Terminal**, install the viewer and its bundled skill.
 
 ```sh
-brew tap briansynthetaic/concept-graph https://github.com/briansynthetaic/agent-concept-graph.git
-brew install concept-graph
+brew install briansynthetaic/tap/concept-graph
 ```
 
 Run the link command for each agent you use.
@@ -48,9 +47,9 @@ Run the link command for each agent you use.
 | Codex | `concept-graph link codex` |
 | Another agent with linked skills | `concept-graph link --dir "/path/to/skills"` |
 
-**In your agent chat**, ask for a specific graph.
+**In a conversation you want to map**, ask your agent:
 
-> Map a scheduled report delivery system. Include the schedule API, run planner, run ledger, and delivery worker. Show who creates a run and who records its outcome.
+> map this conversation to a concept-graph.
 
 Start a fresh agent session if the skill was installed while your chat was open. You can also type `/concept-graph` in Claude Code or `$concept-graph` in Codex followed by your request. Invoking the skill by itself maps the conversation so far.
 
