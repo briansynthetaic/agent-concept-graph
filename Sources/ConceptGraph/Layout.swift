@@ -57,6 +57,13 @@ final class ForceLayout {
     private let cohesion = 0.16
     private let territoryPadding = 26.0
 
+    private struct Neighbor {
+        let members: [Int]
+        var outline: [CGPoint]
+        var bounds: CGRect
+    }
+    private var neighbors: [Neighbor] = []
+
     private struct LocalDrag {
         var anchor: Int
         var members: Set<Int>
@@ -80,7 +87,17 @@ final class ForceLayout {
             shape.geometry(nodes[i].radius).rim(at: CGPoint(x: nodes[i].x, y: nodes[i].y), padding: 22)
         }) : []
         let region = GroupBoundary.centerRegion(outline: outline, rim: shape.geometry(nodes[anchor].radius).rim(at: .zero))
-        localDrag = LocalDrag(anchor: anchor, members: Set(members), outline: outline, region: region)
+        let memberSet = Set(members)
+        let outsiders = nodes.indices.filter { !memberSet.contains($0) }
+        neighbors = Dictionary(grouping: outsiders) { i in nodes[i].group >= 0 ? nodes[i].group : -1 - i }
+            .values.sorted { $0[0] < $1[0] }.map { indices in
+                let outline = GroupBoundary.outline(indices.flatMap { i in
+                    shape.geometry(nodes[i].radius).rim(at: CGPoint(x: nodes[i].x, y: nodes[i].y),
+                                                        padding: nodes[i].group >= 0 ? 22 : collisionPadding)
+                })
+                return Neighbor(members: indices, outline: outline, bounds: GroupBoundary.bounds(outline))
+            }
+        localDrag = LocalDrag(anchor: anchor, members: memberSet, outline: outline, region: region)
     }
 
     func dragOutline(for member: Int) -> [CGPoint]? {
@@ -93,9 +110,12 @@ final class ForceLayout {
 
     func moveDraggedNode(_ index: Int, x: Double, y: Double) {
         nodes[index].pinned = true
-        if localDrag != nil {
+        if let drag = localDrag {
+            let dx = x - nodes[index].x, dy = y - nodes[index].y
+            let before = contactOutline(drag.anchor)
             let carry = pullBoundary(toward: CGPoint(x: x, y: y), holding: false)
-            moveLocally(index, x: x, y: y, members: [], carry: carry)
+            moveLocally(index, x: x, y: y, members: drag.members, carry: carry)
+            pushNeighbors(from: before, to: contactOutline(drag.anchor), dx: dx, dy: dy)
         } else {
             nodes[index].x = x
             nodes[index].y = y
@@ -109,19 +129,69 @@ final class ForceLayout {
         let relative = CGPoint(x: point.x - drag.translation.x, y: point.y - drag.translation.y)
         let pressure = GroupBoundary.pressure(at: relative, region: drag.region)
         let stretch = hypot(pressure.x, pressure.y)
-        guard stretch > 0.01 else { return .zero }
+        // Keep a full bubble diameter of free stretch, including when the pointer is held still.
+        let slack = max(64, 2 * nodes[drag.anchor].radius)
+        let extensionBeyondSlack = stretch - slack
+        guard extensionBeyondSlack > 0.01 else { return .zero }
         // Let the rim give under light pressure, but carry the group even on a single fast sweep.
-        let fraction = holding ? 0.14 : max(0.35, 1 - 24 / stretch)
+        let pull = holding ? extensionBeyondSlack * 0.08 : max(extensionBeyondSlack * 0.06, extensionBeyondSlack - slack * 0.75)
+        let fraction = pull / stretch
+        let before = holding ? contactOutline(drag.anchor) : []
         let dx = pressure.x * fraction, dy = pressure.y * fraction
         localDrag?.translation.x += dx
         localDrag?.translation.y += dy
         for i in nodes.indices where drag.members.contains(i) && i != drag.anchor {
-            moveLocally(i, x: nodes[i].x + dx, y: nodes[i].y + dy, members: drag.members)
+            nodes[i].x += dx
+            nodes[i].y += dy
         }
+        if holding { pushNeighbors(from: before, to: contactOutline(drag.anchor), dx: dx, dy: dy) }
         return CGPoint(x: dx, y: dy)
     }
 
+    private func contactOutline(_ index: Int) -> [CGPoint] {
+        let anchor = nodes[index]
+        return dragOutline(for: index) ?? shape.geometry(anchor.radius).rim(at: CGPoint(x: anchor.x, y: anchor.y),
+                                                                                 padding: anchor.group >= 0 ? 22 : 0)
+    }
+
+    /// Sweep the whole outline, including the open space between its members. Propagate
+    /// each shove through touching territories in decreasing order of displacement.
+    private func pushNeighbors(from old: [CGPoint], to new: [CGPoint], dx: Double, dy: Double) {
+        let length = hypot(dx, dy)
+        guard length > 0.001, !neighbors.isEmpty else { return }
+        let unit = CGPoint(x: dx / length, y: dy / length)
+        var pending = [Double](repeating: 0, count: neighbors.count)
+        var moved = Set<Int>()
+        func collect(from old: [CGPoint], to new: [CGPoint], limit: Double) {
+            let swept = GroupBoundary.outline(old + new)
+            let bounds = GroupBoundary.bounds(swept)
+            for i in neighbors.indices where !moved.contains(i) && bounds.intersects(neighbors[i].bounds) {
+                let target = neighbors[i].outline
+                guard let exit = GroupBoundary.contactExit(swept, target, along: unit) else { continue }
+                let previous = GroupBoundary.contactExit(old, target, along: unit) ?? 0
+                pending[i] = max(pending[i], min(limit, exit - previous))
+            }
+        }
+        collect(from: old, to: new, limit: length)
+        while let i = pending.indices.max(by: { pending[$0] < pending[$1] }), pending[i] > 0.001 {
+            let distance = pending[i]
+            pending[i] = 0
+            moved.insert(i)
+            let tx = unit.x * distance, ty = unit.y * distance
+            for member in neighbors[i].members {
+                nodes[member].x += tx
+                nodes[member].y += ty
+            }
+            let old = neighbors[i].outline
+            let new = old.map { CGPoint(x: $0.x + tx, y: $0.y + ty) }
+            neighbors[i].outline = new
+            neighbors[i].bounds = neighbors[i].bounds.offsetBy(dx: tx, dy: ty)
+            collect(from: old, to: new, limit: distance)
+        }
+    }
+
     func endDrag() {
+        neighbors.removeAll()
         localDrag = nil
         alphaTarget = 0
     }
@@ -131,6 +201,7 @@ final class ForceLayout {
     private func moveLocally(_ index: Int, x: Double, y: Double, members: Set<Int>, carry: CGPoint = .zero) {
         var moves = [(index, x, y)]
         var visited: Set<Int> = [index]
+        let peers = members.sorted()
         var next = 0
         while next < moves.count {
             let (i, endX, endY) = moves[next]
@@ -141,11 +212,10 @@ final class ForceLayout {
             guard length > 0.001 else { continue }
             nodes[i].x = endX
             nodes[i].y = endY
-            for j in nodes.indices where !members.contains(j) && !nodes[j].pinned && !visited.contains(j) {
+            for j in peers where !nodes[j].pinned && !visited.contains(j) {
                 let other = nodes[j]
-                // Groupmates have already translated with the rim. Sweep against them
-                // in that moving frame, and against outsiders along the actual pointer path.
-                let shared = i == index && carry != .zero && localDrag?.members.contains(j) == true ? carry : .zero
+                // Resolve internal collisions in the translated group frame.
+                let shared = i == index ? carry : .zero
                 let sx = start.x + shared.x, sy = start.y + shared.y
                 let travel = shared == .zero ? length : hypot(endX - sx, endY - sy)
                 guard travel > 0.001 else { continue }
@@ -200,6 +270,7 @@ final class ForceLayout {
 
     /// A complete restored arrangement stays exactly where the user left it.
     func stop() {
+        neighbors.removeAll()
         localDrag = nil
         alpha = 0
         alphaTarget = 0

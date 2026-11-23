@@ -83,6 +83,13 @@ enum CanvasChecks {
             for i in 1..<centers.count {
                 check(CGPoint(x: layout.nodes[i].x, y: layout.nodes[i].y) == centers[i])
             }
+            let restingEdge = layout.dragOutline(for: 0)!.map(\.x).max()!
+            layout.moveDraggedNode(0, x: 300, y: 0)
+            for _ in 0..<60 { layout.tick() }
+            check(layout.dragOutline(for: 0)!.map(\.x).max()! > restingEdge + 45)
+            for i in 1..<centers.count {
+                check(CGPoint(x: layout.nodes[i].x, y: layout.nodes[i].y) == centers[i])
+            }
             layout.moveDraggedNode(0, x: 430, y: 0)
             let offset = CGPoint(x: layout.nodes[1].x - centers[1].x, y: layout.nodes[1].y - centers[1].y)
             check(offset.x > 50 && offset.x < 430)
@@ -97,6 +104,31 @@ enum CanvasChecks {
             layout.moveDraggedNode(0, x: shift.x, y: shift.y)
             layout.tick()
             check(abs(layout.nodes[1].x - centers[1].x - shift.x) < 0.001)
+        }
+    }
+
+    private static func checkTerritoryContacts() {
+        for shape in NodeShape.allCases {
+            let layout = ForceLayout()
+            layout.shape = shape
+            // No individual bubble sweeps across the neighbors. Contact is between the outlines.
+            layout.nodes = [
+                .init(x: 0, y: -240, radius: 32, group: 0),
+                .init(x: 0, y: 240, radius: 32, group: 0),
+                .init(x: 190, y: -65, radius: 30, group: 1, pinned: true),
+                .init(x: 190, y: 65, radius: 30, group: 1),
+                .init(x: 370, y: 0, radius: 30, group: -1),
+                .init(x: 0, y: 650, radius: 30, group: 2)
+            ]
+            layout.beginLocalDrag(0)
+            layout.moveDraggedNode(0, x: 390, y: -240)
+            for _ in 0..<90 { layout.tick() }
+            check(layout.nodes[2].x > 300 && layout.nodes[2].pinned)
+            check(layout.nodes[2].x == layout.nodes[3].x && abs(layout.nodes[3].y - layout.nodes[2].y - 130) < 0.000001)
+            check(layout.nodes[4].x > 370)
+            check(layout.nodes[5].x == 0 && layout.nodes[5].y == 650)
+            layout.endDrag()
+            check(!layout.isActive)
         }
     }
 
@@ -169,6 +201,7 @@ enum CanvasChecks {
         defer { if let url = try? Arrangement.url(for: target.path) { try? FileManager.default.removeItem(at: url) } }
 
         checkElasticBoundary()
+        checkTerritoryContacts()
         checkBubbleDragging(graph)
         let scene = Scene(), canvas = scene.canvas
         scene.load(graph)

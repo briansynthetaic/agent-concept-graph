@@ -101,6 +101,43 @@ enum GroupBoundary {
         return region
     }
 
+    static func bounds(_ outline: [CGPoint]) -> CGRect {
+        guard let first = outline.first else { return .null }
+        var xmin = first.x, xmax = first.x, ymin = first.y, ymax = first.y
+        for p in outline.dropFirst() {
+            xmin = min(xmin, p.x); xmax = max(xmax, p.x)
+            ymin = min(ymin, p.y); ymax = max(ymax, p.y)
+        }
+        return CGRect(x: xmin, y: ymin, width: xmax - xmin, height: ymax - ymin)
+    }
+
+    /// For touching convex outlines, find how far the second must slide along the
+    /// drag direction to clear the first. A separating edge means there is no contact.
+    static func contactExit(_ source: [CGPoint], _ target: [CGPoint], along direction: CGPoint) -> CGFloat? {
+        var exit = CGFloat.infinity
+        for polygon in [source, target] {
+            for i in polygon.indices {
+                let a = polygon[i], b = polygon[(i + 1) % polygon.count]
+                let nx = b.y - a.y, ny = a.x - b.x
+                if nx == 0 && ny == 0 { continue }
+                func span(_ points: [CGPoint]) -> (min: CGFloat, max: CGFloat) {
+                    var lo = CGFloat.infinity, hi = -CGFloat.infinity
+                    for p in points {
+                        let v = nx * p.x + ny * p.y
+                        lo = min(lo, v); hi = max(hi, v)
+                    }
+                    return (lo, hi)
+                }
+                let s = span(source), t = span(target)
+                if t.min > s.max || s.min > t.max { return nil }
+                let speed = nx * direction.x + ny * direction.y
+                if speed > 0 { exit = min(exit, (s.max - t.min) / speed) }
+                if speed < 0 { exit = min(exit, (s.min - t.max) / speed) }
+            }
+        }
+        return exit
+    }
+
     static func pressure(at p: CGPoint, region: [CGPoint]) -> CGPoint {
         var outside = false
         var nearest = p
